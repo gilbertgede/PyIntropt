@@ -1,4 +1,4 @@
-from numpy import zeros, finfo, vstack
+from numpy import zeros, finfo, vstack, ones
 from scipy.sparse import csc_matrix, coo_matrix, bmat, vstack as svstack
 from scipy.sparse import eye as seye
 
@@ -81,14 +81,13 @@ class problem:
         H
 
         """
-
         self.n = n
         # First check to make sure problem hasn't been incorrectly supplied
         combined  = ['c', 'cl', 'cu', 'c_x']
         separated = ['g', 'h', 'g_x', 'h_x']
         # now check if components from either style are in the kwargs
-        check1 = max([(i in kwargs.keys) for i in combined])
-        check2 = max([(i in kwargs.keys) for i in separated])
+        check1 = max([(i in kwargs.keys()) for i in combined])
+        check2 = max([(i in kwargs.keys()) for i in separated])
         # Raise error if 2 styles combined, or no constraints supplied
         if check1 and check2:
             raise ValueError('Problem supplied incorrectly (constraint style)')
@@ -100,13 +99,15 @@ class problem:
             raise ValueError('Only constrained problems supported')
         # Also need to create settings for finite differencing
         try:
-            self._eps = kwargs['epsilon']
+            # This is equivalent to max(f^y (x0)) where y = order + 1
+            # Used to calculate optimal finite difference step size
+            self._fdscale = kwargs['fin_diff_scale']
         except:
-            self._eps = (10. * finfo(float).eps) ** 0.5
-        try:
+            self._fdscale = 1. / 3.
+        try: # Finite difference order - forward h, central h^2, central h^4
             self._order = kwargs['fin_diff_order']
         except:
-            self._order = 1
+            self._order = 2
 
         ##########################################
         # Functions are now going to be defined. #
@@ -117,69 +118,76 @@ class problem:
         ########################
         # objective function definition
         resh = lambda x: x.reshape(-1, 1)
-        def scalarfy(x):
-            value = f(x)
-            try:
-                return value[0]
-            except:
-                return value
-        self.f = scalarfy
+        self.f = lambda x: resh(f(x))
         # objective function gradient
-        if kwargs.has_key('f_x'):
+        try:
             self.f_x = kwargs['f_x']
-        else:
-            self.f_x = lambda x: self.approx_jacobian(x, self.f)
+        except:
+            self.f_x = lambda x: self.approx_jacobian(x, f)
 
         ##################
         # Separated form #
         ##################
         if style == 's':
             # equality constraint function
-            if kwargs.has_key('g'):
+            try:
                 self.g = kwargs['g']
-            else:
+            except:
                 self.g = lambda x: self.empty_f(x)
             # inequality constraint function
-            if kwargs.has_key('h'):
+            try:
                 self.h = kwargs['h']
-            else:
+            except:
                 self.h = lambda x: self.empty_f(x)
             # equality constraint gradient
-            if kwargs.has_key('g_x'):
+            try:
                 self.g_x = kwargs['g_x']
-            else:
+            except:
                 self.g_x = lambda x: csc_matrix(self.approx_jacobian(x, self.g))
             # inequality constraint gradient
-            if kwargs.has_key('h_x'):
-                self.g_x = kwargs['h_x']
-            else:
-                self.g_x = lambda x: csc_matrix(self.approx_jacobian(x, self.h))
+            try:
+                self.h_x = kwargs['h_x']
+            except:
+                self.h_x = lambda x: csc_matrix(self.approx_jacobian(x, self.h))
             # hessian function
-            if kwargs.has_key('hessian'):
+            try:
                 self.hessian = kwargs['hessian']
-            else:
+            except:
                 self.hessian = None
         #################
         # Combined form #
         #################
         else:
             ######## long and awkward... ###########
+            try:
+                self.xl = kwargs['xl']
+            except:
+                self.xl = ones((n, 1)) * -1e20
+            try:
+                self.xu = kwargs['xu']
+            except:
+                self.xu = ones((n, 1)) * 1e20
             self.c = kwargs['c']
             self.cl = kwargs['cl']
             self.cu = kwargs['cu']
-            self.c_x = kwargs['c_x']
+            try:
+                self.c_x = kwargs['c_x']
+            except:
+                self.c_x = lambda x: csc_matrix(self.approx_jacobian(x, self.c))
             o = n
             mn = len(self.cl)
             I = seye(o, o).tocsc()
 
             (coo_xer, coo_xec, coo_xed, coo_xir, coo_xic, coo_xid, coo_xlr,
-                coo_xlc, coo_xld, coo_xur, coo_xuc, coo_xud, coo_cer, coo_cec,
-                coo_ced, coo_cir, coo_cic, coo_cid, coo_clr, coo_clc, coo_cld,
-                coo_cur, coo_cuc, coo_cud) = ([], [], [], [], [], [], [], [],
-                                              [], [], [], [], [], [], [], [],
-                                              [], [], [], [], [], [], [], [])
+             coo_xlc, coo_xld, coo_xur, coo_xuc, coo_xud, coo_cer, coo_cec,
+             coo_ced, coo_cir, coo_cic, coo_cid, coo_clr, coo_clc, coo_cld,
+             coo_cur, coo_cuc, coo_cud) = ([], [], [], [], [], [], [], [], [],
+                                           [], [], [], [], [], [], [], [], [],
+                                           [], [], [], [], [], [])
 
             ############## BOUNDS ################
+            xl = self.xl
+            xu = self.xu
             c = self.c
             cl = self.cl
             cu = self.cu
@@ -271,19 +279,19 @@ class problem:
                             [None, Kce]])
                 ce  = vstack([Kxe * xl, Kce * cl])
                 eq  = lambda x: Ke * vstack([resh(x), c(x)]) - ce
-                jeq = lambda x: (Ke * svstack([I, c_x(x)])).transpose()
+                jeq = lambda x: (Ke * svstack([I, c_x(x)]))
                 num_x_eq = len(Kxe * xl)
             elif Kxe is not None:
                 Ke  = Kxe
                 ce  = Kxe * xl
                 eq  = lambda x: Ke * resh(x) - ce
-                jeq = lambda x: Ke.transpose()
+                jeq = lambda x: Ke
                 num_x_eq = len(Kxe * xl)
             elif Kce is not None:
                 Ke  = Kce
                 ce  = Kce * cl
                 eq  = lambda x: Ke * c(x) - ce
-                jeq = lambda x: (Ke * c_x(x)).transpose()
+                jeq = lambda x: (Ke * c_x(x))
                 num_x_eq = 0
             else:
                 Ke  = None
@@ -325,19 +333,19 @@ class problem:
                             [None,  Kil]])
                 ci    = vstack([ciu, cil])
                 ineq  = lambda x: ci + Ki * vstack([resh(x), c(x)])
-                jineq = lambda x: (Ki * svstack([I, c_x(x)])).transpose()
+                jineq = lambda x: (Ki * svstack([I, c_x(x)]))
                 num_x_bound = len(ciu)
             elif Kil is not None:
                 Ki    = Kil
                 ci    = cil
                 ineq  = lambda x: ci + Ki * c(x)
-                jineq = lambda x: (Ki * c_x(x)).transpose()
+                jineq = lambda x: (Ki * c_x(x))
                 num_x_bound = 0
             elif Kiu is not None:
                 Ki    = Kiu
                 ci    = ciu
                 ineq  = lambda x: ci + Ki * resh(x)
-                jineq = lambda x: Ki.transpose()
+                jineq = lambda x: Ki
                 num_x_bound = len(ciu)
             else:
                 Ki    = None
@@ -347,7 +355,8 @@ class problem:
                 num_x_bound = 0
 
             ############# HESSIAN ###################
-            if kwargs.has_key('hessian'):
+            try:
+                hess_func = kwargs['hessian']
                 def hess(x, lam_e, lam_i):
                     lam_e = resh(lam_e)
                     lam_i = resh(lam_i)
@@ -364,8 +373,8 @@ class problem:
                         lam += Kcu.transpose() * lam_i[num_x_bound:]
                     except:
                         pass
-                    return kwargs['hessian'](x, lam)
-            else:
+                    return hess_func(x, lam)
+            except:
                 hess = None
 
             self.g = eq
@@ -380,33 +389,44 @@ class problem:
 
     def empty_f(x):
         return zeros((0, 1))
+
     def approx_jacobian(self, x0, f):
-        eps = self._eps
+        # The code below finds the 'optimal' step size, h, for finite
+        # differencing. The function for the appropriate order is also
+        # generated.
+        # See Course Notes: University of Washington, AMATH 301 Beginning
+        # Scientific Computing. J. N. Kutz, 2009
+        M = self._fdscale # eq. to max(f'''(x0)), for 2nd order
         order = self._order
+        eps = finfo(float).eps
+        if order == 1:
+            h = (2. * eps / M) ** (1. / 2.)
+            row = lambda dx: ((f(x0 + dx) - f0) / h).T[0]
+        elif order == 2:
+            h = (3. * eps / M) ** (1. / 3.)
+            row = lambda dx: ((f(x0 + dx) - f(x0 - dx)) / (2. * h)).T[0]
+        elif order == 4:
+            h = (45. * eps / 4. / M) ** (1. / 5.)
+            row = lambda dx: ((-f(x0 + 2. * dx) + 8. * f(x0 + dx) - 8. * f(x0
+                               - dx) + f(x0 - 2. * dx)) / (12. * h)).T[0]
+        else:
+            raise ValueError('Not a valid finite difference order')
+        self._h = h  # Store this, for other uses
         f0 = f(x0)
         jac = zeros([len(x0), len(f0)])
         dx = zeros((len(x0), 1))
         for i in range(len(x0)):
-            dx[i] = eps
-            # Default, forward difference
-            if order == 1:
-                jac[i] = ((f(x0 + dx) - f0) / eps).T[0]
-            # Second order accurate center difference
-            elif order == 2:
-                jac[i] = ((f(x0 + dx) - f(x0 - dx)) / (2. * eps)).T[0]
-            # Fourth order accurate center difference
-            elif order == 4:
-                jac[i] = ((-f(x0 + 2. * dx) + 8. * f(x0 + dx) - 8. * f(x0 -
-                    dx) + f(x0 - 2. * dx)) / (12. * eps)).T[0]
-            # Sixth order accurate center difference
-            elif order == 6:
-                jac[i] = ((f(x0 + 3. * dx) - 9. * f(x0 + 2. * dx) + 45. * f(x0
-                           + dx) - 45. * f(x0 - dx) + 9. * f(x0 - 2. * dx) -
-                           f(x0 - 3. * dx)) / (60. * eps)).T[0]
-            else:
-                raise ValueError('Not a valid finite difference order')
-            dx[i] = 0.0
-        return jac
+            dx[i] = h
+            jac[i] = row(dx)
+            dx[i] = 0
+        if jac.shape[0] == 1:
+            return jac.T
+        elif jac.shape[1] == 1:
+            return jac
+        elif jac.shape[0] == len(x0):
+            return jac.T
+        else:
+            return jac
 
 
 
