@@ -4,14 +4,18 @@ from scipy.sparse import csc_matrix, bmat
 
 
 def test_problem():
-
+    # The following code is... disgusting.
+    # It was generated with SymPy originally, but the SymPy -> NumPy
+    # translation wasn't playing nice, so it was copied/pasted.
+    # The equations themselves aren't anything specific.
     xn = 10
     gn = 4
     hn = 5
-
     f = lambda x: array([[x[2, 0] * x[3, 0]**2 + x[4, 0] * x[5, 0] * x[6, 0] +
                           x[7, 0] * x[8, 0] / x[9, 0] + sin(x[0, 0] * x[1,
                           0])]])
+    # First, the separated constraints, which is the format the NITRO algorithm
+    # is written for.
     g = lambda x: array([[x[2, 0] + x[3, 0] + 1.], [x[0, 0] * x[1, 0] / 4.],
                          [x[3, 0]**3], [tan(x[8, 0] * x[9, 0] / 20.)]])
     h = lambda x: array([[x[0, 0]], [x[1, 0]], [x[2, 0]], [x[5, 0] / x[6, 0]],
@@ -38,12 +42,6 @@ def test_problem():
                                        x[6, 0]**2, 0, 0, 0],
                                       [0, 0, 0, 0, 0, 0, 0, -2. * x[7, 0] *
                                        sin(x[7, 0]**2), 0, 0]]))
-
-    c = lambda x: vstack([g(x), h(x)])
-    c_x = lambda x: bmat([[g_x(x)], [h_x(x)]])
-    cl = array([0, 0, 0, 0, -1e20, -1e20, -1e20, -1e20, -1e20]).reshape(-1, 1)
-    cu = array([0, 0, 0, 0, 0, 0, 0, 0, 0]).reshape(-1, 1)
-
     hessian = lambda x, ve, vi: csc_matrix(array([
                                     [-x[1, 0]**2 * sin(x[0, 0] * x[1, 0]),
                                      ve[1, 0] / 4. - x[0, 0] * x[1, 0] *
@@ -85,13 +83,19 @@ def test_problem():
                                      0] * x[9, 0] / 20.)**2 + 1.) * tan(x[8, 0]
                                      * x[9, 0] / 20.) / 200. + 2. * x[7, 0]
                                      * x[8, 0] / x[9, 0]**3]]))
+    # Putting the above together to test the combined constraint case.
+    c = lambda x: vstack([g(x), h(x)])
+    c_x = lambda x: bmat([[g_x(x)], [h_x(x)]])
+    cl = array([0, 0, 0, 0, -1e20, -1e20, -1e20, -1e20, -1e20]).reshape(-1, 1)
+    cu = array([0, 0, 0, 0, 0, 0, 0, 0, 0]).reshape(-1, 1)
     c_hessian = lambda x, v: hessian(x, v[:gn], v[gn:])
 
+    # Numerical values to test with
     x0 = arange(1, xn + 1).reshape(-1, 1)
     vg0 = ones((gn, 1))
     vh0 = ones((hn, 1))
 
-    # testing the test functions
+    # Testing the test functions (making sure they output the correct shapes)
     assert f(x0).shape == (1, 1)
     assert g(x0).shape == (gn, 1)
     assert h(x0).shape == (hn, 1)
@@ -99,6 +103,10 @@ def test_problem():
     assert g_x(x0).shape == (gn, xn)
     assert h_x(x0).shape == (hn, xn)
     assert hessian(x0, vg0, vh0).shape == (xn, xn)
+    assert (hessian(x0, vg0, vh0) - hessian(x0, vg0, vh0).transpose()).nnz == 0
+    assert c(x0).shape == (gn + hn, 1)
+    assert cl.shape == cu.shape == (gn + hn, 1)
+    assert c_x(x0).shape == (gn + hn, xn)
 
     # Test separated constraints, with exact derivatives
     prob = problem(n=xn, f=f, g=g, h=h, f_x=f_x, g_x=g_x, h_x=h_x, hessian=hessian)
