@@ -83,6 +83,7 @@ def test_problem():
                                      0] * x[9, 0] / 20.)**2 + 1.) * tan(x[8, 0]
                                      * x[9, 0] / 20.) / 200. + 2. * x[7, 0]
                                      * x[8, 0] / x[9, 0]**3]]))
+
     # Putting the above together to test the combined constraint case.
     c = lambda x: vstack([g(x), h(x)])
     c_x = lambda x: bmat([[g_x(x)], [h_x(x)]])
@@ -111,21 +112,21 @@ def test_problem():
     # Test separated constraints, with exact derivatives
     prob = problem(n=xn, f=f, g=g, h=h, f_x=f_x, g_x=g_x, h_x=h_x, hessian=hessian)
     assert (prob.f(x0) == f(x0)).all()
-    assert (prob.g(x0) == g(x0)).all()
-    assert (prob.h(x0) == h(x0)).all()
+    assert (prob.c_e(x0) == g(x0)).all()
+    assert (prob.c_i(x0) == h(x0)).all()
     assert (prob.f_x(x0) == f_x(x0)).all()
-    assert (prob.g_x(x0) - g_x(x0)).nnz == 0
-    assert (prob.h_x(x0) - h_x(x0)).nnz == 0
+    assert (prob.A_e(x0) - g_x(x0)).nnz == 0
+    assert (prob.A_i(x0) - h_x(x0)).nnz == 0
     assert (prob.hessian(x0, vg0, vh0) - hessian(x0, vg0, vh0)).nnz == 0
 
     # Test separated constraints, with approximated derivatives
     prob = problem(n=xn, f=f, g=g, h=h)
     assert (prob.f(x0) == f(x0)).all()
-    assert (prob.g(x0) == g(x0)).all()
-    assert (prob.h(x0) == h(x0)).all()
+    assert (prob.c_e(x0) == g(x0)).all()
+    assert (prob.c_i(x0) == h(x0)).all()
     assert (abs(prob.f_x(x0) - f_x(x0)) < 10 * prob._h).all()
-    assert (abs(prob.g_x(x0) - g_x(x0)).todense() < 10 * prob._h).all()
-    assert (abs(prob.h_x(x0) - h_x(x0)).todense() < 10 * prob._h).all()
+    assert (abs(prob.A_e(x0) - g_x(x0)).todense() < 10 * prob._h).all()
+    assert (abs(prob.A_i(x0) - h_x(x0)).todense() < 10 * prob._h).all()
     assert prob.hessian is None
 
     # Test combined constraints, with exact derivatives
@@ -134,21 +135,21 @@ def test_problem():
     prob = problem(n=xn, f=f, f_x=f_x, c=c, cl=cl, cu=cu, c_x=c_x, xl=xl,
                    xu=xu, hessian=c_hessian)
     assert (prob.f(x0) == f(x0)).all()
-    assert (prob.g(x0) == g(x0)).all()
-    assert (prob.h(x0) == h(x0)).all()
+    assert (prob.c_e(x0) == g(x0)).all()
+    assert (prob.c_i(x0) == h(x0)).all()
     assert (prob.f_x(x0) == f_x(x0)).all()
-    assert (prob.g_x(x0) - g_x(x0)).nnz == 0
-    assert (prob.h_x(x0) - h_x(x0)).nnz == 0
+    assert (prob.A_e(x0) - g_x(x0)).nnz == 0
+    assert (prob.A_i(x0) - h_x(x0)).nnz == 0
     assert (prob.hessian(x0, vg0, vh0) - c_hessian(x0, vstack([vg0, vh0]))).nnz == 0
 
     # Testing combined constraints, with approximated derivatives
     prob = problem(n=xn, f=f, c=c, cl=cl, cu=cu)
     assert (prob.f(x0) == f(x0)).all()
-    assert (prob.g(x0) == g(x0)).all()
-    assert (prob.h(x0) == h(x0)).all()
+    assert (prob.c_e(x0) == g(x0)).all()
+    assert (prob.c_i(x0) == h(x0)).all()
     assert (abs(prob.f_x(x0) - f_x(x0)) < 10 * prob._h).all()
-    assert (abs(prob.g_x(x0) - g_x(x0)).todense() < 10 * prob._h).all()
-    assert (abs(prob.h_x(x0) - h_x(x0)).todense() < 10 * prob._h).all()
+    assert (abs(prob.A_e(x0) - g_x(x0)).todense() < 10 * prob._h).all()
+    assert (abs(prob.A_i(x0) - h_x(x0)).todense() < 10 * prob._h).all()
     assert prob.hessian is None
 
 

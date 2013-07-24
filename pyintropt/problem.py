@@ -131,24 +131,24 @@ class problem:
         if style == 's':
             # equality constraint function
             try:
-                self.g = kwargs['g']
+                self.c_e = kwargs['g']
             except:
-                self.g = lambda x: self.empty_f(x)
+                self.c_e = lambda x: self.empty_f(x)
             # inequality constraint function
             try:
-                self.h = kwargs['h']
+                self.c_i = kwargs['h']
             except:
-                self.h = lambda x: self.empty_f(x)
+                self.c_i = lambda x: self.empty_f(x)
             # equality constraint gradient
             try:
-                self.g_x = kwargs['g_x']
+                self.A_e = kwargs['g_x']
             except:
-                self.g_x = lambda x: csc_matrix(self.approx_jacobian(x, self.g))
+                self.A_e = lambda x: csc_matrix(self.approx_jacobian(x, self.g))
             # inequality constraint gradient
             try:
-                self.h_x = kwargs['h_x']
+                self.A_i = kwargs['h_x']
             except:
-                self.h_x = lambda x: csc_matrix(self.approx_jacobian(x, self.h))
+                self.A_i = lambda x: csc_matrix(self.approx_jacobian(x, self.h))
             # hessian function
             try:
                 self.hessian = kwargs['hessian']
@@ -357,6 +357,7 @@ class problem:
             ############# HESSIAN ###################
             try:
                 hess_func = kwargs['hessian']
+                self.c_hessian = hess_func
                 def hess(x, lam_e, lam_i):
                     lam_e = resh(lam_e)
                     lam_i = resh(lam_i)
@@ -377,10 +378,10 @@ class problem:
             except:
                 hess = None
 
-            self.g = eq
-            self.h = ineq
-            self.g_x = jeq
-            self.h_x = jineq
+            self.c_e = eq
+            self.c_i = ineq
+            self.A_e = jeq
+            self.A_i = jineq
             self.hessian = hess
 
 
