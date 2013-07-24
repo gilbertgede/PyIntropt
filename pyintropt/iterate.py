@@ -11,6 +11,10 @@ class iterate:
     """
 
     def __init__(self, x, problem, **kwargs):
+        try:
+            self.old = kwargs['old']
+        except:
+            self.old = None
         self.problem = problem
         self.x = x
 
@@ -29,12 +33,12 @@ class iterate:
         self.n = len(x)
         self.m = len(self.c_i)
         self.t = len(self.c_e)
-        self.e = ones((self.n, 1))
+        self.e = ones((self.m, 1))
 
         try:
             self.s = kwargs['s']
         except:
-            s = abs(self.c_i.reshape(-1, 1))
+            s      = abs(self.c_i.reshape(-1, 1))
             self.s = s + (1. - self.tau) * (s == 0) # prevents div by 0 later
 
         # Combination objects, calculated once for convenience/speed
@@ -49,6 +53,7 @@ class iterate:
 
         # Lagrange multipliers and Hessian
         self.l_e, self.l_i, s_sigma_s = kwargs['update_lambdas'](self)
+        self.Aele_Aili = self.A_e * self.l_e + self.A_i * self.l_i
         try: # Either use actual hessian, or ...
             self.hessian = problem.hessian(x, self.l_e, self.l_i)
         except: # start with I for approximations
@@ -63,12 +68,17 @@ class iterate:
         self.E_mu = kwargs['error_func'](self.mu, it=self)
 
 
-    def bounds(self, mu, tau, eps_mu, delta=None):
+    def post_next(self, mu, tau, eps_mu, delta=None, **kwargs):
         self.mu = mu
         self.tau = tau
         self.eps_mu = eps_mu
         if delta:
             self.delta = delta
+        try:
+            self.E, self.E_type = kwargs['error_func'](extra=True, it=self)
+            self.E_mu = kwargs['error_func'](self.mu, it=self)
+        except:
+            pass
 
 
     def next(self, dx, ds, **kwargs):
@@ -88,4 +98,4 @@ class iterate:
                        mu=self.mu, tau=self.tau, eps_mu=self.eps_mu,
                        error_func=kwargs['error_func'],
                        update_lambdas=kwargs['update_lambdas'],
-                       hessian_approx=kwargs['hessian_approx'])
+                       hessian_approx=kwargs['hessian_approx'], old=self)
