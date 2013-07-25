@@ -26,6 +26,7 @@ class nitro:
         Takes initial point, problem, and initial barrier and trust-region values.
         """
 
+        self.hess_approx = 'SR1'
         if mu > 1.:
             raise ValueError('mu cannot be above 1.')
         tau = 0.995
@@ -43,27 +44,36 @@ class nitro:
         self.problem = problem
         self.it_list = [iterate(x0, problem, mu=mu, delta=delta, tau=tau,
                                 eps_mu=eps_mu, error_func=self._error_func,
-                                hessian_approx=_update_hessian,
-                                update_lambdas=_self._update_lambdas)]
+                                hessian_approx=self._update_hessian,
+                                update_lambdas=self._update_lambdas)]
 
 
     def run(self, max_iter=50, stopping_tol=1.e-7, printing=True):
-        while ( (self.qp_k < max_iter) and (self.mu_k < max_iter / 10) and
-                (it_list[-1].delta > self.delta_min) ):
-            self.qp_k += 1
+        running = True
+        while ( (self.qp_k < max_iter) and (self.mu_k < max_iter) and
+                (self.it_list[-1].delta > self.delta_min) and running):
             it = self.it_list[-1]
-            d_x, d_s, gamma, step_flag = self.step()
-            if step_flag is not 0:
-                self.it_list.append(it.next(dx, ds, gamma,
-                                            error_func=self._error_func,
-                                            hessian_approx=_update_hessian,
-                                            update_lambdas=_self._update_lambdas))
-            if it.E_mu < it.eps_mu:
+
+            if it.E < stopping_tol:
+                running = False
+                continue
+            elif it.E_mu < it.eps_mu:
                 self.mu_k += 1
-                mu = max(1.e-8, min(0.2 * it.mu, (it.E / it_list[0].E_mu)**1.7))
+                mu = max(1.e-8, min(0.2 * it.mu, (it.E / self.it_list[0].E_mu)**1.7))
                 eps_mu = max(1.e-8, min(1.e-2, 30 * it.mu))
-                tau = 1. - min(0.005, it.E / it_list[0].E_mu)
+                tau = 1. - min(0.005, it.E / self.it_list[0].E_mu)
+                self._print_major(mu, it.mu)
                 it.post_next(mu, tau, eps_mu, error_func=self._error_func)
+                continue
+
+            d_x, d_s, gamma, step_flag = self.step()
+            self.qp_k += 1
+            if step_flag is not 0:
+                self.it_list.append(it.next(d_x, d_s, gamma=gamma,
+                                            error_func=self._error_func,
+                                            hessian_approx=self._update_hessian,
+                                            update_lambdas=self._update_lambdas))
+            self._print_minor(step_flag, d_x, d_s)
 
 
     def step(self):
@@ -108,7 +118,7 @@ class nitro:
         else:
             # attempt second order correction
             y_x, y_s = self._second_order_correction(v_bar, w_bar, d_x, d_s)
-            if y_x and y_s:
+            if (y_x is not None) and (y_s is not None):
                 d_x += y_x
                 d_s += y_s
                 #slack_vio = (it.s + d_s >= (1. - it.tau) * it.s).all()
@@ -117,11 +127,32 @@ class nitro:
                 if slack_vio and (ared >= self.eta * pred):
                     # Take step with second order correction
                     step_flag = 2
-            else:
-                d_x *= 0
-                d_s *= 0
+        if step_flag == 0:
+            d_x *= 0
+            d_s *= 0
+
         gamma = ared / pred
         return (d_x, d_s, gamma, step_flag)
+
+    def _print_major(self, mu, mu_old):
+        print(('\033[95m\033[1m%6d|  Barrier Parameter Iteration  ' % self.mu_k +
+              '\t     \u03BC: %10.6e -> %10.6e\033[0;0m\x1b[0;0m' % (mu_old, mu)))
+
+    def _print_minor(self, step_flag, d_x, d_s):
+        it = self.it_list[-1]
+        if step_flag == 0:
+            temp_str = 'No Step '
+        elif step_flag == 1:
+            temp_str = 'Step    '
+        elif step_flag == 2:
+            temp_str = 'S.O.C.  '
+        elif step_flag == 3:
+            temp_str = 'NM Step '
+        step_len = (norm(d_x)**2 + norm(d_s)**2)**0.5
+        print(('%6d|  ' % self.qp_k + temp_str +
+               '    \u0394: %10.6e' % it.delta +
+               '    Step length: %10.6e' % step_len +
+               '    Error %d: %10.6e' % (it.E_type, it.E)))
 
 
     def _error_func(self, mu=0, extra=False, it=None):
@@ -132,7 +163,7 @@ class nitro:
         From [Byrd1999] equation (2.3)
         """
         one   = abs(it.f_x + it.Aele_Aili)
-        two   = abs(it.s * it.l_i - mu)
+        two   = abs(it.s * it.l_i - mu * it.e)
         three = abs(it.c_e)
         four  = abs(it.c_i + it.s)
         l = [one.max(), two.max(), three.max(), four.max()]
@@ -179,7 +210,7 @@ class nitro:
                 temp = csc_matrix(temp)
                 hess = hess + temp
         elif self.hess_approx == 'BFGS':
-            H_s = hes * s
+            H_s = hess * s
             s_T_H_s = dot(s.T, H_s)
             s_T_y = dot(s.T, y)
             # Choose size for theta
@@ -410,8 +441,8 @@ class nitro:
             second = dot(A_T_v_bar.T, A_T_v_bar)
             return first + second
 
-        top = (dot(fx_mu.T, v_w_bar) + 0.5 *
-                  dot(v_w_bar.T, (G * v_w_bar)))
+        top = (dot(fx_mu.T, v_w_bar) +
+               0.5 * dot(v_w_bar.T, (G * v_w_bar)))
         # Possibly increase nu if it is not big enough
         if model_m() != 0:
             nu = max(nu, top / ((1 - rho) * vpred))
@@ -421,7 +452,7 @@ class nitro:
     # [Byrd1999] equations (3.32, 3.49, 3.50)
     def _compute_pred(self, v_w_bar, vpred, it):
         temp = 0.5 * it.G * v_w_bar
-        f_red = dot(it.grad_f.T, v_w_bar[:it.n]) + dot(v_w_bar[:it.n].T, temp[:it.n])
+        f_red = dot(it.f_x.T, v_w_bar[:it.n]) + dot(v_w_bar[:it.n].T, temp[:it.n])
         s_red = -it.mu * sum(v_w_bar[it.n:]) + dot(v_w_bar[it.n:].T, temp[it.n:])
         return (-f_red, -s_red, self.nu * vpred)
 
@@ -437,11 +468,10 @@ class nitro:
         c_i_x = it.c_i
         c_i_xdx = problem.c_i(it.x + d_x)
         cs_norm = (norm(c_e_x)**2 + norm(c_i_x + it.s)**2)**0.5
-        cs_norm_dxds = (norm(c_e_xdx)**2 + norm(c_i_xdx + it.s +
-                        d_s)**2)**0.5
+        cs_norm_dxds = (norm(c_e_xdx)**2 + norm(c_i_xdx + it.s + d_s)**2)**0.5
         return (f_x - f_xdx,
-                - it.mu * (sum(log(abs(it.s))) + sum(log(abs(it.s + d_s)))),
-                cs_norm - cs_norm_dxds)
+                - it.mu * (sum(log(abs(it.s))) - sum(log(abs(it.s + d_s)))),
+                self.nu * (cs_norm - cs_norm_dxds))
 
 
     # Makes a second order correction if necessary

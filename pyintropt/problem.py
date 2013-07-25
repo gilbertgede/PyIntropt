@@ -36,7 +36,11 @@ class problem:
                   returns numpy column array of n x 1
             x_l : a numpy column array of n x 1
             x_u : a numpy column array of n x 1
+
+
           and:
+
+
             g   : function
                   takes in x
                   returns numpy column array
@@ -143,12 +147,12 @@ class problem:
             try:
                 self.A_e = kwargs['g_x']
             except:
-                self.A_e = lambda x: csc_matrix(self.approx_jacobian(x, self.g))
+                self.A_e = lambda x: csc_matrix(self.approx_jacobian(x, self.c_e))
             # inequality constraint gradient
             try:
                 self.A_i = kwargs['h_x']
             except:
-                self.A_i = lambda x: csc_matrix(self.approx_jacobian(x, self.h))
+                self.A_i = lambda x: csc_matrix(self.approx_jacobian(x, self.c_i))
             # hessian function
             try:
                 self.hessian = kwargs['hessian']
@@ -167,7 +171,7 @@ class problem:
                 self.xu = kwargs['xu']
             except:
                 self.xu = ones((n, 1)) * 1e20
-            self.c = kwargs['c']
+            self.c  = kwargs['c']
             self.cl = kwargs['cl']
             self.cu = kwargs['cu']
             try:

@@ -1,7 +1,9 @@
 from numpy import zeros, finfo, vstack, ones
+from numpy.linalg import norm, cholesky
 from scipy.sparse import csc_matrix, coo_matrix, bmat, vstack as svstack
 from scipy.sparse import spdiags, eye as seye
-from scipy.sparse.linalg import factorized
+from scipy.sparse.linalg import factorized, eigsh
+
 
 class iterate:
     """
@@ -17,6 +19,8 @@ class iterate:
             self.old = None
         self.problem = problem
         self.x = x
+        self.hessian_modified = False
+        self.hessian_original = None
 
         self.mu     = kwargs['mu']
         self.delta  = kwargs['delta']
@@ -35,6 +39,21 @@ class iterate:
         self.t = len(self.c_e)
         self.e = ones((self.m, 1))
 
+        if self.A_e.shape == (self.t, self.n):
+            self.A_e = self.A_e.transpose()
+        elif self.A_e.shape == (self.n, self.t):
+            pass
+        else:
+            raise ValueError('Wrong shape for equality jacobian matrix')
+
+        if self.A_i.shape == (self.m, self.n):
+            self.A_i = self.A_i.transpose()
+        elif self.A_i.shape == (self.n, self.m):
+            pass
+        else:
+            raise ValueError('Wrong shape for inequality jacobian matrix')
+
+
         try:
             self.s = kwargs['s']
         except:
@@ -44,8 +63,8 @@ class iterate:
         # Combination objects, calculated once for convenience/speed
         self.fx_mu = vstack((self.f_x, -self.mu * self.e))
         self.ce_cis = vstack((self.c_e, self.c_i + self.s))
-        self.A = bmat([[self.A_e,  self.A_i],
-                       [self.None, spdiags(self.s.T, [0], self.m, self.m)]])
+        self.A = bmat([[self.A_e,                                  self.A_i],
+                       [    None,    spdiags(self.s.T, [0], self.m, self.m)]])
         self.A_aug = bmat([[seye(self.n + self.m, self.n + self.m), self.A],
                            [self.A.transpose(), None]]).tocsc()
         self.A_aug_fact = factorized(self.A_aug)
@@ -61,8 +80,19 @@ class iterate:
                 self.hessian = kwargs['hessian_approx'](self)
             except:
                 self.hessian = seye(self.n, self.n)
-        self.G = bmat([[self.hessian, None]
+
+        self.hessian_original = self.hessian
+
+        i = 0.001
+        while (eigsh(self.hessian, k=1, which='SA',
+               return_eigenvectors=False)[0] < 0):
+            self.hessian_modified = True
+            self.hessian = (self.hessian + i * seye(*self.hessian.shape)).tocsc()
+            i *= 10
+
+        self.G = bmat([[self.hessian, None],
                        [None,    s_sigma_s]]).tocsc()
+
         # Error values
         self.E, self.E_type = kwargs['error_func'](extra=True, it=self)
         self.E_mu = kwargs['error_func'](self.mu, it=self)
@@ -81,7 +111,7 @@ class iterate:
             pass
 
 
-    def next(self, dx, ds, **kwargs):
+    def next(self, d_x, d_s, **kwargs):
         # Resizing the trust region radius
         gamma = kwargs['gamma']
         d_norm = (norm(d_x)**2 + norm(d_s)**2)**0.5
@@ -94,7 +124,7 @@ class iterate:
         else:
             delta = self.delta * 0.4
 
-        return iterate(x + dx, self.problem, s=self.s + ds, delta=delta,
+        return iterate(self.x + d_x, self.problem, s=self.s + d_s, delta=delta,
                        mu=self.mu, tau=self.tau, eps_mu=self.eps_mu,
                        error_func=kwargs['error_func'],
                        update_lambdas=kwargs['update_lambdas'],
