@@ -59,9 +59,9 @@ class nitro:
                 continue
             elif it.E_mu < it.eps_mu:
                 self.mu_k += 1
-                mu = max(1.e-8, min(0.2 * it.mu, (it.E / self.it_list[0].E_mu)**1.7))
+                mu = max(1.e-8, min(0.2 * it.mu, (it.E_mu / self.it_list[0].E_mu)**1.7))
                 eps_mu = max(1.e-8, min(1.e-2, 30 * it.mu))
-                tau = 1. - min(0.005, it.E / self.it_list[0].E_mu)
+                tau = 1. - min(0.005, it.E_mu / self.it_list[0].E_mu)
                 self._print_major(mu, it.mu)
                 it.post_next(mu, tau, eps_mu, error_func=self._error_func)
                 continue
@@ -81,10 +81,9 @@ class nitro:
         Compute single step for an iterate.
         """
         it = self.it_list[-1]
-        (v_x, v_s) = self._normal_step(self.zeta, it.delta, it.tau,
-                                       it.A, it.ce_cis, it.n,
-                                       it.m, it.A_aug_fact, it.A_c,
-                                       it.s, self.normal_tol)
+        (v_x, v_s) = self._normal_step(self.zeta, it.delta, it.tau, it.A,
+                                       it.ce_cis, it.n, it.m, it.A_aug_fact,
+                                       it.A_c, it.s, self.normal_tol)
         (w_x, w_s) = self._tangential_step(v_x, v_s, it.n, it.m, it.t,
                                            it.delta, it.tau, it.s, it.fx_mu,
                                            it.G, it.A_aug_fact)
@@ -152,7 +151,7 @@ class nitro:
         print(('%6d|  ' % self.qp_k + temp_str +
                '    \u0394: %10.6e' % it.delta +
                '    Step length: %10.6e' % step_len +
-               '    Error %d: %10.6e' % (it.E_type, it.E)))
+               '    Error %d: %10.6e' % (it.E_type, it.E_mu)))
 
 
     def _error_func(self, mu=0, extra=False, it=None):
@@ -175,12 +174,17 @@ class nitro:
             return (m, i)
 
 
-    def _update_lambdas(self, it):
+    def _update_lambdas(self, it, oldie):
         # Function to update lagrange multipliers
         # [Byrd1999] equations (3.12, 3.15)
-        b = (it.A.transpose() * -it.fx_mu).reshape(-1, 1)
-        temp = vstack((zeros((it.n + it.m, 1)), b)).squeeze()
-        lambdas = -it.A_aug_fact(temp).reshape(-1, 1)[it.n + it.m:]
+        if oldie is not None:
+            mu = oldie
+        else:
+            mu = it.mu
+        fx_mu = vstack([it.f_x, -it.e * mu])
+        b = (it.A.transpose() * -fx_mu).reshape(-1, 1)
+        temp = vstack((zeros((it.n + it.m, 1)), -b)).squeeze()
+        lambdas = it.A_aug_fact(temp).reshape(-1, 1)[it.n + it.m:]
         l_e = lambdas[:it.t]
         l_i = lambdas[it.t:]
         sigma = empty((it.m, 1))
@@ -188,7 +192,7 @@ class nitro:
             if l_i[i] > 0:
                 sigma[i] = l_i[i] / it.s[i]
             else:
-                sigma[i] = it.mu * it.s[i]**-2
+                sigma[i] = mu * it.s[i]**-2
         return (l_e, l_i, spdiags((it.s * sigma * it.s).T, [0], it.m, it.m))
 
 

@@ -129,28 +129,39 @@ def test_problem():
     assert (abs(prob.A_i(x0) - h_x(x0)).todense() < 10 * prob._h).all()
     assert prob.hessian is None
 
+
+    ng = lambda x: vstack([array([x[0, 0]]), g(x)])
+    nh = lambda x: vstack([array([[10 - x[1, 0]], [x[2, 0] - 10]]), h(x)])
+    ng_x = lambda x: vstack([array([[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]]), g_x(x).todense()])
+    nh_x = lambda x: vstack([array([[0, -1, 0, 0, 0, 0, 0, 0, 0, 0],
+                                    [0,  0, 1, 0, 0, 0, 0, 0, 0, 0]]), h_x(x).todense()])
+
+    xl = array([0, 10, -1e20, -1e20, -1e20, -1e20, -1e20, -1e20, -1e20, -1e20]).reshape(-1, 1)
+    xu = array([0, 1e20, 10, 1e20, 1e20, 1e20, 1e20, 1e20, 1e20, 1e20]).reshape(-1, 1)
+    vg0 = ones((gn + 1, 1))
+    vh0 = ones((hn + 2, 1))
+
     # Test combined constraints, with exact derivatives
-    xl = -1e20 * ones((len(x0), 1))
-    xu = 1e20 * ones((len(x0), 1))
+    #xl = -1e20 * ones((len(x0), 1))
+    #xu = 1e20 * ones((len(x0), 1))
     prob = problem(n=xn, f=f, f_x=f_x, c=c, cl=cl, cu=cu, c_x=c_x, xl=xl,
                    xu=xu, hessian=c_hessian)
     assert (prob.f(x0) == f(x0)).all()
-    assert (prob.c_e(x0) == g(x0)).all()
-    assert (prob.c_i(x0) == h(x0)).all()
+    assert (prob.c_e(x0) == ng(x0)).all()
+    assert (prob.c_i(x0) == nh(x0)).all()
     assert (prob.f_x(x0) == f_x(x0)).all()
-    assert (prob.A_e(x0) - g_x(x0)).nnz == 0
-    assert (prob.A_i(x0) - h_x(x0)).nnz == 0
+    assert csc_matrix(prob.A_e(x0) - ng_x(x0)).nnz == 0
+    assert csc_matrix(prob.A_i(x0) - nh_x(x0)).nnz == 0
     assert (prob.hessian(x0, vg0, vh0) - c_hessian(x0, vstack([vg0, vh0]))).nnz == 0
 
     # Testing combined constraints, with approximated derivatives
-    prob = problem(n=xn, f=f, c=c, cl=cl, cu=cu)
+    prob = problem(n=xn, f=f, c=c, cl=cl, cu=cu, xl=xl, xu=xu)
     assert (prob.f(x0) == f(x0)).all()
-    assert (prob.c_e(x0) == g(x0)).all()
-    assert (prob.c_i(x0) == h(x0)).all()
+    assert (prob.c_e(x0) == ng(x0)).all()
+    assert (prob.c_i(x0) == nh(x0)).all()
     assert (abs(prob.f_x(x0) - f_x(x0)) < 10 * prob._h).all()
-    assert (abs(prob.A_e(x0) - g_x(x0)).todense() < 10 * prob._h).all()
-    assert (abs(prob.A_i(x0) - h_x(x0)).todense() < 10 * prob._h).all()
+    assert (abs(prob.A_e(x0) - csc_matrix(ng_x(x0))).todense() < 10 * prob._h).all()
+    assert (abs(prob.A_i(x0) - csc_matrix(nh_x(x0))).todense() < 10 * prob._h).all()
     assert prob.hessian is None
-
 
 

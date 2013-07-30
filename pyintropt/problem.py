@@ -2,7 +2,6 @@ from numpy import zeros, finfo, vstack, ones
 from scipy.sparse import csc_matrix, coo_matrix, bmat, vstack as svstack
 from scipy.sparse import eye as seye
 
-
 class problem:
     """
     The object which stores a problem's definition.
@@ -158,26 +157,27 @@ class problem:
                 self.hessian = kwargs['hessian']
             except:
                 self.hessian = None
+
         #################
         # Combined form #
         #################
         else:
             ######## long and awkward... ###########
             try:
-                self.xl = kwargs['xl']
+                xl = self.xl = kwargs['xl']
             except:
-                self.xl = ones((n, 1)) * -1e20
+                xl = self.xl = ones((n, 1)) * -1e20
             try:
-                self.xu = kwargs['xu']
+                xu = self.xu = kwargs['xu']
             except:
-                self.xu = ones((n, 1)) * 1e20
-            self.c  = kwargs['c']
-            self.cl = kwargs['cl']
-            self.cu = kwargs['cu']
+                xu = self.xu = ones((n, 1)) * 1e20
+            c = self.c  = kwargs['c']
+            cl = self.cl = kwargs['cl']
+            cu = self.cu = kwargs['cu']
             try:
-                self.c_x = kwargs['c_x']
+                c_x = self.c_x = kwargs['c_x']
             except:
-                self.c_x = lambda x: csc_matrix(self.approx_jacobian(x, self.c))
+                c_x = self.c_x = lambda x: csc_matrix(self.approx_jacobian(x, self.c))
             o = n
             mn = len(self.cl)
             I = seye(o, o).tocsc()
@@ -190,12 +190,6 @@ class problem:
                                            [], [], [], [], [], [])
 
             ############## BOUNDS ################
-            xl = self.xl
-            xu = self.xu
-            c = self.c
-            cl = self.cl
-            cu = self.cu
-            c_x = self.c_x
             xm = 0
             xn = 0
             for i in range(o):

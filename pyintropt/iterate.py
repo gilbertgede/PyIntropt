@@ -71,7 +71,11 @@ class iterate:
         self.A_c = self.A * self.ce_cis
 
         # Lagrange multipliers and Hessian
-        self.l_e, self.l_i, s_sigma_s = kwargs['update_lambdas'](self)
+        try:
+            oldie = kwargs['lm_mu']
+        except:
+            oldie = None
+        self.l_e, self.l_i, s_sigma_s = kwargs['update_lambdas'](self, oldie)
         self.Aele_Aili = self.A_e * self.l_e + self.A_i * self.l_i
         try: # Either use actual hessian, or ...
             self.hessian = problem.hessian(x, self.l_e, self.l_i)
@@ -119,7 +123,7 @@ class iterate:
             delta = max(7. * d_norm, self.delta * 1.05)
         elif gamma >= 0.3:
             delta = max(2. * d_norm, self.delta * 1.05)
-        elif gamma >= 0:
+        if gamma >= 0:
             delta = self.delta * 1.05
         else:
             delta = self.delta * 0.4
@@ -128,4 +132,4 @@ class iterate:
                        mu=self.mu, tau=self.tau, eps_mu=self.eps_mu,
                        error_func=kwargs['error_func'],
                        update_lambdas=kwargs['update_lambdas'],
-                       hessian_approx=kwargs['hessian_approx'], old=self)
+                       hessian_approx=kwargs['hessian_approx'], old=self, lm_mu=self.mu)
