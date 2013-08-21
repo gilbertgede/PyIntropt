@@ -88,7 +88,7 @@ class iterate:
         self.hessian_original = self.hessian
 
         i = 0.001
-        while (eigsh(self.hessian, k=1, which='SA',
+        while (eigsh(self.hessian, k=1, which='SA', maxiter=100000,
                return_eigenvectors=False)[0] < 0):
             self.hessian_modified = True
             self.hessian = (self.hessian + i * seye(*self.hessian.shape)).tocsc()
@@ -123,7 +123,7 @@ class iterate:
             delta = max(7. * d_norm, self.delta * 1.05)
         elif gamma >= 0.3:
             delta = max(2. * d_norm, self.delta * 1.05)
-        if gamma >= 0:
+        elif gamma >= 0:
             delta = self.delta * 1.05
         else:
             delta = self.delta * 0.4

@@ -68,11 +68,10 @@ class nitro:
 
             d_x, d_s, gamma, step_flag = self.step()
             self.qp_k += 1
-            if step_flag is not 0:
-                self.it_list.append(it.next(d_x, d_s, gamma=gamma,
-                                            error_func=self._error_func,
-                                            hessian_approx=self._update_hessian,
-                                            update_lambdas=self._update_lambdas))
+            self.it_list.append(it.next(d_x, d_s, gamma=gamma,
+                                        error_func=self._error_func,
+                                        hessian_approx=self._update_hessian,
+                                        update_lambdas=self._update_lambdas))
             self._print_minor(step_flag, d_x, d_s)
 
 
