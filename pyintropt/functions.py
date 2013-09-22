@@ -1,7 +1,31 @@
-from numpy import zeros, finfo, vstack, ones, matrix
-from scipy.sparse import csr_matrix
+from numpy import zeros, finfo, vstack, ones, matrix, empty, where, squeeze, prod, asarray
+from scipy.linalg import lu_factor, lu_solve
+from scipy.sparse import csc_matrix, isspmatrix, isspmatrix
+from scipy.sparse.linalg import spsolve
 eps = finfo(float).eps
 big = 1 / eps**2
+
+
+def qp_feas(x, c_x, x_l, x_u, c_l, c_u, tol=10.):
+    """
+    Helper function to test if the current point (in the current quadratic
+    programming problem) is feasible.
+    Assumes "original" form of problem, not the form with slack variables.
+    """
+    c = densify(c_x * x)
+    #TODO add ability to know where the violation is, and actual tolerance?
+    if (x_l <= x).all() and (x <= x_u).all() and (c_l <= c).all() and (c <= c_u).all():
+        return True
+    return False
+
+
+def densify(x):
+    """
+    Helper function to convert to dense, only if needed.
+    """
+    if isspmatrix(x):
+        return x.todense()
+    return x
 
 
 def factiz(K):
@@ -9,19 +33,88 @@ def factiz(K):
     Helper function to behave the same way scipy.sparse.factorized does, but
     for dense matrices.
     """
-    from scipy.linalg import lu_factors, lu_solve
-    luf = lu_factors(K)
-    return lambda x: lu_solve(luf, x)
+    luf = lu_factor(K)
+    return lambda x: matrix(lu_solve(luf, x))
 
 
-def row(x):
+def sp_solve(A, b):
+    """
+    Helper function to do sparse matrix / vector solving, which occasionally
+    has trouble if not guarded for loss of numpy dimensions.
+    """
+    b = asarray(b).reshape(-1,)
+    if b.shape == (1,):
+        return col(b.squeeze() / A[0, 0])
+    else:
+        return spsolve(A, b)
+
+
+def sp_factiz(A):
+    """
+    Helper function to behave the same way scipy.sparse.factorized does, but
+    for to allow for matrix right hand sides.
+    """
+    from scipy.sparse.linalg import factorized, splu
+    from scipy.sparse.linalg.dsolve import _superlu
+    A = csc_matrix(A)
+    M, N = A.shape
+    #Afactsolve = factorized(A)
+    Afactsolve = splu(A, options={'IterRefine' : 'DOUBLE', 'SymmetricMode' : True}).solve
+
+    def solveit(b):
+        """
+        Mainly lifted from scipy.sparse.linalg.spsolve, which doesn't allow for
+        the factorization of A to be saved, which should happen in this usage.
+        """
+        b_is_vector = (max(b.shape) == prod(b.shape))
+        if b_is_vector:
+            if isspmatrix(b):
+                b = b.toarray()
+            b = asarray(b)
+            b = b.squeeze()
+        else:
+            if isspmatrix(b):
+                b = csc_matrix(b)
+            if b.ndim != 2:
+                raise ValueError("b must be either a vector or a matrix")
+
+        if M != b.shape[0]:
+            raise ValueError("matrix - rhs dimension mismatch (%s - %s)"
+                            % (A.shape, b.shape[0]))
+
+        if b_is_vector:
+            b = asarray(b, dtype=A.dtype)
+            options = dict(ColPerm='COLAMD', IterRefine='DOUBLE', SymmetricMode=True)
+            x = _superlu.gssv(N, A.nnz, A.data, A.indices, A.indptr, b, 1,
+                            options=options)[0]
+        else:
+            # Cover the case where b is also a matrix
+            tempj = empty(M, dtype=int)
+            x = A.__class__(b.shape)
+            mat_flag = False
+            if b.__class__ is matrix:
+                mat_flag = True
+            for j in range(b.shape[1]):
+                if mat_flag:
+                    xj = Afactsolve(squeeze(asarray(b[:, j])))
+                else:
+                    xj = Afactsolve(squeeze(b[:, j].toarray()))
+                w = where(xj != 0.0)[0]
+                tempj.fill(j)
+                x = x + A.__class__((xj[w], (w, tempj[:len(w)])),
+                                    shape=b.shape, dtype=A.dtype)
+        return x
+    return solveit
+
+
+def col(x):
     """
     Helper function to return x as a n x 1 numpy matrix.
     """
     return matrix(x).reshape(-1, 1)
 
 
-def col(x):
+def row(x):
     """
     Helper function to return x as a 1 x n numpy matrix.
     """
@@ -33,6 +126,44 @@ def vec_clamp(x, clamp_tol=10.):
     Helper function to clamp a numpy object x to 0 if it is within a tolerance.
     """
     return x * (x < clamp_tol * eps)
+
+
+def extract_row(x, row_list):
+    """
+    Helper function to deal with pulling out rows for possibly 0xN matrices.
+    """
+    return x[row_list]
+
+
+def extract_col(x, col_list):
+    """
+    Helper function to deal with pulling out cols for possibly Nx0 matrices.
+    """
+    return x[:, col_list]
+
+
+def sp_extract_row(x, row_list):
+    """
+    Helper function to deal with pulling out rows for possibly 0xN sparse
+    matrices.
+    """
+    try:
+        to_return = x[row_list]
+    except:
+        to_return = x[0:0]
+    return to_return
+
+
+def sp_extract_col(x, col_list):
+    """
+    Helper function to deal with pulling out cols for possibly Nx0 sparse
+    matrices.
+    """
+    try:
+        to_return = x[:, row_list]
+    except:
+        to_return = x[:, 0:0]
+    return to_return
 
 
 def approx_jacobian(x0, f, order=2, _fdscale=1./3., sparse=True):
@@ -81,7 +212,7 @@ def approx_jacobian(x0, f, order=2, _fdscale=1./3., sparse=True):
         pass
     else:
         if sparse == True:
-            jac = csr_matrix(rows)
+            jac = csc_matrix(rows)
         else:
             jac = array(rows)
 
