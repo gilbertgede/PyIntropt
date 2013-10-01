@@ -1,4 +1,4 @@
-from numpy import zeros, finfo, vstack, ones, matrix, empty, where, squeeze, prod, asarray
+from numpy import zeros, finfo, vstack, ones, matrix, empty, where, squeeze, prod, asarray, multiply
 from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse import csc_matrix, isspmatrix, isspmatrix
 from scipy.sparse.linalg import spsolve
@@ -121,11 +121,11 @@ def row(x):
     return matrix(x).reshape(1, -1)
 
 
-def vec_clamp(x, clamp_tol=10.):
+def vec_clamp(x, clamp_tol=100.):
     """
     Helper function to clamp a numpy object x to 0 if it is within a tolerance.
     """
-    return x * (x < clamp_tol * eps)
+    return multiply(x, (abs(x) > clamp_tol * eps))
 
 
 def extract_row(x, row_list):
