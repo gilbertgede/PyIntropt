@@ -1,29 +1,30 @@
-from numpy import bmat, clip, nonzero, nanmin, maximum, multiply, asarray, matrix
-from numpy.linalg import eigvals, matrix_rank, LinAlgError
+import numpy as np
+import scipy.sparse as sp
+
+from numpy import bmat, nonzero, maximum, multiply, asarray, matrix
+from numpy.linalg import eigvals, matrix_rank, LinAlgError # TODO should be doing sparse versions of these...
 from numpy.random import randint
-from scipy.sparse import isspmatrix
 from pyintropt.functions import col, eps, big, densify, vec_clamp
+from pyintropt.functions import sp_extract_row as extract, sp_factiz as factorized, sp_solve as solve
+
+mbmat = lambda x: sp.bmat(x).tocsc()
 
 
-def qp_dispatch(x, c, f_xx, c_x, c_l, c_u, x_l, x_u, active_set=[], find_feas=False, relax=False):
+def qp_dispatch(x, c, f_xx, c_x, c_l, c_u, x_l, x_u, active_set=[]):
     """
     Dispatch to QP algorithm taking care of slack variables, infeasabilities, etc.
     Also handles sparsity issues, and proper shapes of input data.
     Takes in problem of the form:
 
-            min   c.T * x + 1/2 * x.T * H * x
-            s.t.  c_l <= c_x * x <= c_u,
-                  x_l <= x <= x_u
+        min   c.T * x + 1/2 * x.T * H * x
+        s.t.  c_l <= c_x * x <= c_u,
+                x_l <= x <= x_u
 
     """
 
     # Auto-checking for sparse
-    if isspmatrix(f_xx) and isspmatrix(c_x):
-        sparse = True
-    elif isspmatrix(f_xx) or isspmatrix(c_x):
-        raise ValueError('Either both f_xx and c_x need to be sparse, or neither')
-    else:
-        sparse = False
+    if not (sp.isspmatrix(f_xx) and sp.isspmatrix(c_x)):
+        raise ValueError('Need to supply sparse matrices')
 
     n = max(x.shape)
     m = c_x.shape[0]
@@ -34,349 +35,137 @@ def qp_dispatch(x, c, f_xx, c_x, c_l, c_u, x_l, x_u, active_set=[], find_feas=Fa
     elif m == n:
         raise LinAlgError('Not working yet')
 
+    """ TODO check if this is needed after stalling fix, as slackify does this already """
     x = col(x)
     c = col(c)
     x_l = col(x_l)
     x_u = col(x_u)
     c_l = col(c_l)
     c_u = col(c_u)
-    if sparse:
-        import numpy as np
-        import scipy.sparse as sp
-        from pyintropt.functions import sp_solve as solve
-        c_x  = sp.csc_matrix(c_x)
-        zeros = sp.coo_matrix((n + m, n + m), np.float64).tocsc()
-        eye   = sp.eye(n + 2 * m, n + m).tocsc()
-        ones  = np.matrix(np.ones((n + m, 1)))
-        mbmat = lambda x: sp.bmat(x).tocsc()
-    else:
-        import numpy as np
-        from numpy.linalg import solve
-        c_x  = np.matrix(c_x)
-        zeros = np.matrix(np.zeros((n + m, n + m)))
-        eye   = np.matrix(np.eye(n + 2 * m, n + m))
-        ones  = np.matrix(np.ones((n + m, 1)))
-        from numpy import bmat as mbmat
+    c_x  = sp.csc_matrix(c_x)
+    f_xx = sp.csc_matrix(f_xx)
+    """ End check section """
 
+    zeros = sp.coo_matrix((n + m, n + m), np.float64).tocsc()
+    eye   = sp.eye(n + m, n + m).tocsc()
+    ones  = np.matrix(np.ones((n + m, 1)))
 
     # Check to see if we should even be solving this problem, and if it's
     # initially feasible
-    if not sparse:
+    # TODO: add checks for sparse matrices, maybe?
+    """
         if matrix_rank(Ap) != min(Ap.shape):
             raise LinAlgError('Bad rank for initial constraint matrix')
         if not (eigvals(f_xx) > 0).all():
             raise LinAlgError('Not positive definite')
-    else:
-        pass # TODO: add checks for sparse matrices, maybe?
-
-
+    """
     # Transforming to using slack variables, with only x and s bounded on both
     # sides
     s_init = densify(c_x * x)
-    xp, cp, Hp, Ap, lp, up = slackify(x, c, f_xx, c_x, x_l, x_u, c_l, c_u, s_init, sparse)
+    xp, cp, Hp, Ap, lp, up = slackify(x, c, f_xx, c_x, x_l, x_u, c_l, c_u, s_init)
 
-    # TODO feasibility/s_init calc
-    run = False
-    for i in range(len(xp)):
-        if xp[i, 0] < lp[i, 0]:
-            xp[i, 0] = lp[i, 0]
-            run = True
-        if xp[i, 0] > up[i, 0]:
-            xp[i, 0] = up[i, 0]
-            run = True
-    if run:
-        Hp2 = eye[: n + m, : n + m]
-        # is this right - assume no initial active set for feasibility?
-        # out = qp_sc(xp * 0, cp * 0, Hp2, Ap, lp - xp, up - xp, active_set, sparse, find_feas=True, ress = Ap * xp)
-        out = qp_ns(xp * 0, cp * 0, Hp2, Ap, lp - xp, up - xp, active_set, sparse, find_feas=True, ress0=Ap*xp)
-        xp  = vec_clamp(xp + out[0])
-        active_set = out[1]
+    # Feasibility part
+    out = qp_subdispatch(xp * 0, cp + Hp * xp, Hp, Ap, vec_clamp(lp - xp), vec_clamp(up - xp), active_set, feas=qp_feasdispatch)
+    xp  = vec_clamp(xp + out[0])
+    active_set = out[1]
 
     # Final solve
-    x, active_set, mu = qp_ns(xp, cp, Hp, Ap, lp, up, active_set, sparse)
-    return x[:n, 0], active_set, mu
+    x, active_set, mu = qp_subdispatch(xp * 0, cp + Hp * xp, Hp, Ap, vec_clamp(lp - xp), vec_clamp(up - xp), active_set, func=qp_ns, feas=qp_feasdispatch)
+    return vec_clamp(xp + x)[:n, 0], active_set, mu
 
 
-def slackify(x, c, H, c_x, x_l, x_u, c_l, c_u, s_init, sparse):
+def slackify(x, c, H, c_x, x_l, x_u, c_l, c_u, s_init):
     n = max(x.shape)
     m = c_x.shape[0]
 
-    x = col(x)
-    c = col(c)
-    x_l = col(x_l)
-    x_u = col(x_u)
-    c_l = col(c_l)
-    c_u = col(c_u)
+    zeros = sp.coo_matrix((n + m, n + m), np.float64).tocsc()
+    eye   = sp.eye(m, m).tocsc()
 
-    if sparse:
-        import numpy as np
-        import scipy.sparse as sp
-        c_x  = sp.csc_matrix(c_x)
-        H = sp.csc_matrix(H)
-        zeros = sp.coo_matrix((n + m, n + m), np.float64).tocsc()
-        eye   = sp.eye(n + 2 * m, n + m).tocsc()
-        cp = bmat([[c], [zeros[:m, 0].todense()]]) # slack transformation
-        mbmat = lambda x: sp.bmat(x).tocsc()
-    else:
-        import numpy as np
-        from numpy import bmat as mbmat
-        c_x  = np.matrix(c_x)
-        H = np.matrix(H)
-        zeros = np.matrix(np.zeros((n + m, n + m)))
-        eye   = np.matrix(np.eye(n + 2 * m, n + m))
-        cp = bmat([[c], [zeros[:m, 0]]]) # slack transformation
+    xp = bmat([[         col(x)],
+               [densify(s_init)]])
+    lp = bmat([[col(x_l)],
+               [col(c_l)]])
+    up = bmat([[col(x_u)],
+               [col(c_u)]])
+    cp = bmat([[               col(c)],
+               [densify(zeros[:m, 0])]])
 
+    c_x  = sp.csc_matrix(c_x)
+    H = sp.csc_matrix(H)
     Hp = mbmat([[            H, zeros[:n, :m]],
-                [zeros[:m, :n], zeros[:m, :m]]])
-    Ap = mbmat([[c_x, -eye[:m, :m]]])
-    lp = bmat([[x_l], [c_l]])
-    up = bmat([[x_u], [c_u]])
-    s_init = densify(s_init)
-    xp = bmat([[x], [s_init]])
+                [zeros[:m, :n], zeros[:m, :m]]]).tocsc()
+    Ap = mbmat([[c_x, -eye[:m, :m]]]).tocsc()
 
     return xp, cp, Hp, Ap, lp, up
 
 
+"""
+as_feasdispatch
+    feas
+    if stall -> perturb -> feas
+    post stall -> feas
 
-def qp_sc(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None):
-    """
-    Quadratic programming solver.
-
-    Note that the function takes in c, not f_x - do the appropriate conversion
-    before hand.
-    Using the Schur-Complement method, solves quadratic programming problems in
-    the form:
-
-    min   c.T * x + 1/2 * x.T * H * x
-    s.t.  A * x = 0
-          x_l <= x <= x_u
-
-    """
-
-    def _print_step(i, x, num_actv, num_actvd):
-        if find_feas:
-            outstr = '    F:'
-        else:
-            outstr = '      '
-        good = '\033[32m'
-        bad  = '\033[31m'
-        end  = '\033[0m'
-        outstr += ' Iter: %7d   ' % i
-        val = (c.T * x + 0.5 * x.T * H * x)[0, 0]
-        outstr += 'Obj. val: ' + good + '%4.6e    ' % val + end
-        outstr += 'Activ(ated) set size: %7d (%7d)     ' % (num_actv, num_actvd)
-        leader = bad
-        if max(abs(A * x)) < 1.e3 * eps:
-            leader = good
-        temps = leader + '%2.3e ' % max(abs(A * x)) + end + '    '
-        outstr += '|Ax|= %s' % temps
-
-        l = (x_l <= x).all()
-        u = (x_u >= x).all()
-        llead = bad
-        ulead = bad
-        if l:
-            llead = good
-        if u:
-            ulead = good
-        outstr += 'x_l <= x: ' + llead + str(l) + end + ' x <= x_u: ' + ulead + str(u) + end
-        return outstr
+as_dispatch
+    run
+    if stall -> perturb -> run
+    post stall -> as_feasdispatch -> run
+"""
 
 
-    n = x.shape[0]
-    m = A.shape[0]
-    if sparse:
-        import numpy as np
-        import scipy.sparse as sp
-        from pyintropt.functions import sp_extract_row as extract, sp_factiz as factorized, sp_solve as solve
-        zeros = sp.coo_matrix((n, n), np.float64).tocsc()
-        eye   = sp.eye(n, n).tocsc()
-        mbmat = lambda x: sp.bmat(x).tocsc()
+
+def qp_subdispatch(x, c, H, A, x_l, x_u, active_set, func=None, feas=None):
+    if func is None:
+        callfunc = feas
     else:
-        import numpy as np
-        from numpy import bmat as mbmat
-        from numpy.linalg import solve
-        from pyintropt.functions import extract_row as extract, factiz as factorized
-        zeros = np.matrix(np.zeros((n, n)))
-        eye   = np.matrix(np.eye(n, n))
+        callfunc = func
+    x, active_set, mu, stalled = callfunc(x, c, H, A, x_l, x_u, active_set)
+    if stalled:
+        x_l2 = x_l.copy()
+        x_u2 = x_u.copy()
+        while stalled == True:   # means it stalled
+            rand_perturb = abs(np.random.randn(*x_l.shape)) / 10000.
+            x_l2 -= rand_perturb
+            x_u2 += rand_perturb
+            x, active_set, mu, stalled = callfunc(x, c, H, A, x_l2, x_u2, active_set)
+        if func is not None:
+            x, active_set, mu = qp_subdispatch(x, c, H, A, x_l, x_u, active_set, feas=feas)
+            x = vec_clamp(x)
+        if func is not None:
+            x, active_set, mu = qp_subdispatch(x, c, H, A, x_l, x_u, active_set, feas=feas)
+            x = vec_clamp(x)
+        x, active_set, mu, stalled = callfunc(x, c, H, A, x_l, x_u, active_set)
+    return x, active_set, mu
 
-    cycling_count = dict(zip(list(range(n)), [0]*n))
 
-    free_set      = set(list(range(n)))
-    freed_set     = set()
-    active_set    = set(active_set)
-    activated_set = set()
-    free_set     -= active_set
-
-    n0 = len(free_set)
-    free0_set = free_set.copy()
-    active0_set = active_set.copy()
-
-    # Transformation matrices between x` and working/free sets
-    Cmat = eye
-    C_f0 = extract(Cmat, sorted(list(free_set)))         # Initial free variables
-    C_w0 = extract(Cmat, sorted(list(active0_set)))      # Initial fixed variables
-
-    A0 = A * C_f0.T
-    K0 = mbmat([[C_f0 * H * C_f0.T,         A0.T],
-                [                A0, zeros[:m, :m]]])
-    K0fact = factorized(K0)
-
-    # Faster to calculate worst possible K0_inv * U, and pull out relevant
-    # parts later.
-    U_max1 = mbmat([[C_f0 * eye[: n, : n]], [zeros[: m, : n]]]) # Left part, fixed variables
-    U_max2 = mbmat([[C_f0 * H], [A]])                         # Right part, freed variables
-    K_inv_U_max1 = K0fact(U_max1)
-    K_inv_U_max2 = K0fact(U_max2)
-
-    g = densify(c + H * x)
-    print('\nInitial Sizes - n: %8d, m: %8d, n0: %8d' % (n, m, n0))
+def qp_feasdispatch(x, c, H, A, x_l, x_u, active_set):
+    """
+    Used to call appropriate methods for finding a feasible point.
+    """
+    run = False
     mu = 0
-    mu_ineq = 0
-    i = 0
-    while True:
-        # Need to compute some transformation and sizes for this iteration
-        C_f  = extract(Cmat, sorted(list(free_set)))       # Current free (all) variables
-        C_fd = extract(Cmat, sorted(list(freed_set)))      # Current free (not initially free) variables
-        C_w  = extract(Cmat, sorted(list(active_set)))     # Current fixed (all) variables
-        C_wd = extract(Cmat, sorted(list(activated_set)))  # Current fixed (not-initially fixed) variables
-        num_actvd = len(activated_set) # no. of initially free variables, fixed
-        num_actv = len(active_set)     # no. of fixed variables
-        num_frd   = len(freed_set)     # no. of initially fixed variables, freed
-
-        if i > 2 * (n - m):
-            break #TODO add error return or something?
-            raise Exception('Too many iterations')
-
-        print(_print_step(i, x, num_actv, num_actvd))
-        i += 1
-
-        if ress0 is None:
-            ress = zeros[:m, 0]
-        else:
-            ress = ress0 + A * x
-
-        # Increasing the size of the system to solve
-        # Utilizing the Schur Complement approach
-        # TODO still not convinced this is the correct U, from initial
-        # constraints concerns
-        U = mbmat([[ mbmat([[C_f0 * eye[: n, : n]], [zeros[: m, : n]]]) * C_wd.T,
-                     mbmat([[C_f0 * H * C_fd.T], [A * C_fd.T]])]])
-        V = mbmat([[zeros[:num_actvd, :num_actvd], zeros[:num_actvd, :num_frd]],
-                   [  zeros[:num_frd, :num_actvd],          C_fd * H * C_fd.T]])
-        #C = V - U.T * K0fact(U) # Original (slow) C calculation
-        C = V - U.T * mbmat([[K_inv_U_max1 * C_wd.T, K_inv_U_max2 * C_fd.T]])
+    stalling = False
+    # Check to see if bounds have been violated
+    for i in range(len(x)):
+        if x[i, 0] < x_l[i, 0]:
+            x[i, 0] = x_l[i, 0]
+            run = True
+        elif x[i, 0] > x_u[i, 0]:
+            x[i, 0] = x_u[i, 0]
+            run = True
+    # Check to see if EQ constraints are violated
+    if abs(A * x).max() > 1.e3 * eps:
+        run = True
+    if run:
+        I = sp.eye(len(x), len(x)).tocsc()
+        out = qp_ns(x * 0, c * 0, I, A, vec_clamp(x_l - x), vec_clamp(x_u - x), active_set, find_feas=True, ress0=A*x)
+        x = vec_clamp(x + out[0])
+        active_set = out[1]
+        mu = out[2]
+        stalling = out[3]
+    return x, active_set, mu, stalling
 
 
-        f = bmat([[C_f0 * g], [densify(ress)]])
-        w = bmat([[densify(zeros[:num_actvd, 0])], [C_fd * g]])
-        v = col(K0fact(f))
-        z = col(solve(C, w - U.T * v))
-        y = col(K0fact(f - U * z))
-
-
-        p = C_f0.T * -y[:n0, 0]        # portion from initially free variables
-        if num_frd != 0:               # portion from initially fixed variables
-            p += C_fd.T * -z[-num_frd:, 0]
-        mu = y[n0 : n0 + m, 0]          # Equality multipliers
-        p  = C_f.T * C_f * p
-
-        if not find_feas and (abs(A * p).max() > 1.e3 * eps):
-            print('\033[31mAp max: ' + str((abs(A * p).max())) + '\033[0m')
-
-
-        if max(list(cycling_count.values())) > 4:
-            print("CYCLING!!!!!!!!!")
-            print(max(abs(p)))
-            #break
-
-        # Portion where the step size is calculated
-        alpha = 0
-        alpha_ind = 0
-        alpha_l = C_f.T * C_f * (x_l - x) / p
-        alpha_u = C_f.T * C_f * (x_u - x) / p
-        alphas = maximum(alpha_l, alpha_u)
-        alpha_unclip = nanmin(alphas)
-        alpha_ind = nonzero(alphas == alpha_unclip)[0][0]
-        alpha = clip(alpha_unclip, 0, 1)
-
-        # take the step
-        x = x + alpha * p
-        g = densify(c + H * x)
-
-        #TODO needs to be after x = alpha + xp
-        if find_feas:
-            if abs(A * x + ress).max() < 1.e3 * eps:
-                print('Found feasible point: ' + str(abs(A * x + ress).max()))
-                break
-
-        if alpha < 1:
-            """ If we're not taking a full step, we add the limiting index to
-            the active set, and pin x` to the appropriate boundary. """
-            # check to see if it variable to be fixed has already been fixed
-            for ii in range(max(alpha_ind.shape)):
-                ind = alpha_ind[0, ii]
-                if ind in active_set:
-                    raise ValueError('That variable is already fixed...')
-                if alpha_unclip in alpha_l:             # fixing on a lower bound
-                    x[ind, 0] = x_l[ind, 0]
-                else:                                   # fixing on an upper bound
-                    x[ind, 0] = x_u[ind, 0]
-                print('\u03B1: %2.7f, fixed %d' % (alpha, ind))
-
-                # Update the sets
-                cycling_count[ind] += 1
-                active_set.add(ind)
-                free_set  -= {ind}
-                freed_set -= {ind}
-                if ind not in active0_set: # only "activated" if not
-                    activated_set.add(ind) # initially in fixed set
-        else:
-            """ If we are taking a full step, we need to check the lagrange
-            multipliers on the inequalities to make sure they have the correct
-            sign, and remove them from the active set if necessary."""
-            if len(active0_set) == 0:   # there was no initial active set
-                if len(active_set) == 0:
-                    break
-                mu_ineq = z[:len(active_set), 0] # multipliers from fixed vars
-            else:                       # some initial active set was provided
-                #TODO it's wrong...? Currently, _seems_ right, but inefficient
-                #mu_ineq1 = z[:len(active_set), 0] # fixed during iterations
-                #C_temp = extract(Cmat, sorted(list(active_set.intersection(active0_set))))
-                #mu_ineq2 = C_temp * g - C_temp * A.T * mu
-                #mu_ineq = C_wd.T * mu_ineq1 + C_temp.T * mu_ineq2
-                mu_ineq = C_w * g - C_w * A.T * mu
-
-            mu_ineq = C_w * g - C_w * A.T * mu
-
-            active_list = sorted(list(active_set))
-            at_upper = (abs(x - x_u) < eps)[active_list]
-            at_lower = (abs(x - x_l) < eps)[active_list]
-            upper = multiply(multiply(at_upper, (mu_ineq > 0)), abs(mu_ineq))
-            lower = multiply(multiply(at_lower, (mu_ineq < 0)), abs(mu_ineq))
-            maxval = maximum(upper, lower)
-
-            # if nothing has a bad multiplier, we're done!
-            if max(maxval) <= 0:
-                print('full alpha     All lagrange multipliers are good!')
-                break
-            else: # otherwise, remove offending element from active set
-                max_ind = nonzero(maxval == max(maxval))[0][0]
-                ri = randint(0, max(max_ind.shape))
-                max_ind = max_ind[0, ri]
-                max_ind = active_list[max_ind]
-                print('\u03B1: 1       freeing: ' + str(max_ind))
-                free_set.add(max_ind)
-                active_set -= {max_ind}
-                activated_set -= {max_ind}
-                if max_ind not in free0_set: # only "freed" if not
-                    freed_set.add(max_ind)   # initially in free set
-                cycling_count[max_ind] += 1
-    return x, active_set, mu_ineq
-
-
-
-def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None):
+def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
     """
     Quadratic programming solver.
 
@@ -395,12 +184,13 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
             outstr = '    F:'
         else:
             outstr = '      '
+        blue = '\033[34m'
         good = '\033[32m'
         bad  = '\033[31m'
         end  = '\033[0m'
         outstr += ' Iter: %7d   ' % i
         val = (c.T * x + 0.5 * x.T * H * x)[0, 0]
-        outstr += 'Obj. val: ' + good + '%4.6e    ' % val + end
+        outstr += 'Obj. val: ' + blue + '%4.6e    ' % val + end
         outstr += 'Active set size: %7d    ' % num_actv
         leader = bad
         if max(abs(A * x)) < 1.e3 * eps:
@@ -416,13 +206,13 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
             llead = good
         if u:
             ulead = good
-        outstr += 'x_l <= x: ' + llead + str(l) + end + ' x <= x_u: ' + ulead + str(u) + end
+        outstr += llead + 'x_l <= x' + end + ', ' + ulead + 'x <= x_u' + end
         outstr += '      \u03B1: %3.7f' % alpha
         return outstr
 
     def _min_ratio_test(x, p, l, u):
         """
-        Steplength procedure already in place, placed into a function to
+        Steplength procedure already in place, placed into a function to maybe
         utilize methods in [Gill1988].
         """
 
@@ -430,10 +220,11 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
         p2 += eps * (abs(p2) < eps)
         alpha_l = (l - x) / p2
         alpha_u = (u - x) / p2
-        tol = eps**(2. / 3.)
-        alphas = asarray(p < -tol) * asarray(alpha_l)
-        alphas += asarray(p >  tol) * asarray(alpha_u)
-        alphas += asarray(p < tol) * asarray(p > -tol) * asarray(ones[:n, 0] * big)
+        tol = eps**(2. / 3.)    # from [Gill1988], TODO re-examine maybe?
+        alphas = (asarray(p < -tol) * asarray(alpha_l) +
+                  asarray(p >  tol) * asarray(alpha_u) +
+                  asarray(p <  tol) * asarray(p > -tol) * asarray(ones[:n, 0] * big))
+        # TODO figure out how to do this without the re-casting
         alphas = matrix(alphas).reshape(-1, 1)
         alpha = min(alphas.min(), 1)
         ind = asarray(nonzero(alphas == alpha)[0][0]).squeeze().tolist()
@@ -447,59 +238,46 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
     n = x.shape[0]
     m = A.shape[0]
 
-    if sparse:
-        import numpy as np
-        import scipy.sparse as sp
-        from pyintropt.functions import sp_extract_row as extract, sp_factiz as factorized, sp_solve as solve
-        zeros = sp.coo_matrix((n, n), np.float64).tocsc()
-        eye   = sp.eye(n, n).tocsc()
-        mbmat = lambda x: sp.bmat(x).tocsc()
-        ones  = np.matrix(np.ones((n + m, 1)))
-    else:
-        import numpy as np
-        from numpy import bmat as mbmat
-        from numpy.linalg import solve
-        from pyintropt.functions import extract_row as extract, factiz as factorized
-        zeros = np.matrix(np.zeros((n, n)))
-        eye   = np.matrix(np.eye(n, n))
-        ones  = np.matrix(np.ones((n + m, 1)))
+    zeros = sp.coo_matrix((n, n), np.float64).tocsc()
+    eye   = sp.eye(n, n).tocsc()
+    ones  = np.matrix(np.ones((n + m, 1)))
 
-    cycling_count = dict(zip(list(range(n)), [0]*n))
 
+    stalling_count = dict(zip(list(range(n)), [0]*n))
+
+    fixed = asarray(x_l == x_u).squeeze().tolist()
+    fixed_list = []
+    for i, v in enumerate(fixed):
+        if v:
+            fixed_list += [i]
+    fixed_set     = set(fixed_list)
     free_set      = set(list(range(n)))
-    freed_set     = set()
     active_set    = set(active_set)
-    activated_set = set()
+    active_set   -= fixed_set
     free_set     -= active_set
-
-    n0 = len(free_set)
-    free0_set = free_set.copy()
-    active0_set = active_set.copy()
+    free_set     -= fixed_set
 
     # Transformation matrices between x` and working/free sets
-    Cmat = eye
-    # Once a null-space reduction is implemented, probably delete these
-    #C_f0 = extract(Cmat, sorted(list(free_set)))         # Initial free variables
-    #C_w0 = extract(Cmat, sorted(list(active0_set)))      # Initial fixed variables
-
-
+    Cmat = eye[:n, :n]
     g = densify(c + H * x)
+
+    n0 = len(free_set)
     print('\n\nInitial Sizes - n: %8d, m: %8d, n0: %8d' % (n, m, n0))
+    if find_feas:
+        print('Initial Feasibility Violation: ' + str(abs(ress0).max()))
+
     mu = 0
     mu_ineq = 0
     i = 0
     stalling = False
     while True:
+        working_set = active_set.union(fixed_set)
         # Need to compute some transformation and sizes for this iteration
         C_f  = extract(Cmat, sorted(list(free_set)))       # Current free (all) variables
-        C_w  = extract(Cmat, sorted(list(active_set)))     # Current fixed (all) variables
-        # Once a null-space reduction is implemented, probably delete these
-        #C_fd = extract(Cmat, sorted(list(freed_set)))      # Current free (not initially free) variables
-        #C_wd = extract(Cmat, sorted(list(activated_set)))  # Current fixed (not-initially fixed) variables
-        num_actvd = len(activated_set) # no. of initially free variables, fixed
+        C_a  = extract(Cmat, sorted(list(active_set)))     # Current fixed (activated) variables
+        C_w  = extract(Cmat, sorted(list(working_set)))     # Current fixed (all) variables
         num_actv = len(active_set)     # no. of fixed variables
-        num_frd   = len(freed_set)     # no. of initially fixed variables, freed
-
+        num_work = len(working_set)     # no. of fixed variables
 
         if ress0 is None:
             ress = zeros[:m, 0]
@@ -510,9 +288,10 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
 
         ta = A * C_f.T
         K = mbmat([[C_f * H * C_f.T, ta.T], [ta, zeros[:m, :m]]])
+        # TODO fix it so the solve doesn't sometimes get errors
         xx = col(solve(K, f))
-        p = -C_f.T * xx[:n - len(active_set)]
-        mu = xx[n - len(active_set):]
+        p = -C_f.T * xx[:n - num_work]
+        mu = xx[n - num_work:]
 
 
         if not find_feas and (abs(A * p).max() > 1.e3 * eps):
@@ -526,7 +305,7 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
         # take the step
         x = x + alpha * p
         g = densify(c + H * x)
-        mu_ineq = C_w * g - C_w * A.T * mu
+        mu_ineq = C_a * g - C_a * A.T * mu
         i += 1
 
         if find_feas:
@@ -534,8 +313,10 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
                 print('Found feasible point: ' + str(abs(A * x + ress).max()))
                 break
 
-        if max(list(cycling_count.values())) > 4:
+        #if max(list(stalling_count.values())) > (n - m) / 2:
+        if max(list(stalling_count.values())) > 20:
             stalling = True
+            print('Stalling!!!')
             break
 
         if i > 2 * (n - m):
@@ -546,11 +327,9 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
             the active set, and pin x` to the appropriate boundary. """
 
 
-
             """ Trying fixing and freeing together """
-            if find_feas and False:
-                if len(active_set) > 0:
-                    mu_ineq = C_w * g - C_w * A.T * mu
+            if find_feas:
+                if num_actv > 0:
                     active_list = sorted(list(active_set))
                     at_upper = (abs(x - x_u) < eps)[active_list]
                     at_lower = (abs(x - x_l) < eps)[active_list]
@@ -565,16 +344,13 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
                         print('freeing: ' + str(max_ind))
                         free_set.add(max_ind)
                         active_set -= {max_ind}
-                        activated_set -= {max_ind}
-                        if max_ind not in free0_set: # only "freed" if not
-                            freed_set.add(max_ind)   # initially in free set
-                        cycling_count[max_ind] += 1
+                        stalling_count[max_ind] += 1
 
 
             # check to see if it variable to be fixed has already been fixed
             for ii in range(len(alpha_ind)):
                 ind = alpha_ind[ii]
-                if ind in active_set:
+                if (ind in active_set) or (ind in fixed_set):
                     raise ValueError('That variable is already fixed...')
                 if abs(x[ind, 0] - x_l[ind, 0]) < 1.e3 * eps:
                     x[ind, 0] = x_l[ind, 0]
@@ -586,18 +362,15 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
                 print('fixing:  ' + str(ind))
 
                 # Update the sets
-                cycling_count[ind] += 1
+                stalling_count[ind] += 1
                 active_set.add(ind)
                 free_set  -= {ind}
-                freed_set -= {ind}
-                if ind not in active0_set: # only "activated" if not
-                    activated_set.add(ind) # initially in fixed set
 
         else:
             """ If we are taking a full step, we need to check the lagrange
             multipliers on the inequalities to make sure they have the correct
             sign, and remove them from the active set if necessary."""
-            if len(active_set) == 0:
+            if num_actv == 0:
                 break
 
             active_list = sorted(list(active_set))
@@ -609,19 +382,16 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, sparse, find_feas=False, ress0=None)
 
             # if nothing has a bad multiplier, we're done!
             if max(maxval) <= 0:
-                print('full alpha     All lagrange multipliers are good!')
+                print('All lagrange multipliers are good!')
                 break
             else: # otherwise, remove offending element from active set
-                max_ind = nonzero(maxval == max(maxval))[0][0]
-                ri = randint(0, max(max_ind.shape))
-                max_ind = max_ind[0, ri]
-                max_ind = active_list[max_ind]
-                print('freeing: ' + str(max_ind))
-                free_set.add(max_ind)
-                active_set -= {max_ind}
-                activated_set -= {max_ind}
-                if max_ind not in free0_set: # only "freed" if not
-                    freed_set.add(max_ind)   # initially in free set
-                cycling_count[max_ind] += 1
+                max_ind1 = nonzero(maxval == max(maxval))[0]
+                for ii in range(max(max_ind1.shape)):
+                    max_ind = max_ind1[0, ii]
+                    max_ind = active_list[max_ind]
+                    print('freeing: ' + str(max_ind))
+                    free_set.add(max_ind)
+                    active_set -= {max_ind}
+                    stalling_count[max_ind] += 1
 
-    return x, active_set, mu_ineq
+    return x, active_set, mu_ineq, stalling

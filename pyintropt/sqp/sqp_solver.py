@@ -1,6 +1,6 @@
 from numpy import matrix, array, eye, asarray, vstack
 from .qp_solver import qp_dispatch
-from pyintropt.functions import eps
+from pyintropt.functions import eps, col, big
 from numpy.linalg import inv
 from scipy.sparse import issparse
 
@@ -12,8 +12,8 @@ def _slack_finder(y, yl, yu, lambd, rho=None):
     yu = asarray(yu).squeeze()
     lambd = asarray(lambd).squeeze()
     out = y * 0
-    if rho:
-        y_term = y - lambd / asarray(rho)
+    if rho is not None:
+        y_term = y - lambd / asarray(rho).squeeze()
     else:
         y_term = y
     return matrix((yl > y_term) * yl + (yu < y_term) * yu + ((yl < y_term) * (y_term < yu)) * y_term).reshape(-1, 1)
@@ -54,13 +54,17 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
     n = len(x)
     c_k = c(x)
     m = len(c_k)
+    x_l = col(x_l)
+    x_u = col(x_u)
+    c_l = col(c_l)
+    c_u = col(c_u)
 
 
     sparse = True
     if sparse:
         from scipy.sparse import eye, dia_matrix
         eye = eye(n + m).tocsc()
-        diag = lambda x: dia_matrix((x, [0]), shape=(len(x), len(x)))
+        diag = lambda x: dia_matrix((asarray(x).squeeze(), [0]), shape=(len(x), len(x)))
     else:
         from numpy import eye, diag
         eye = eye(n + m)
@@ -72,13 +76,13 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
 
     """ Stuff for initialization """
     f_k = f(x)
-    c_k = c(x)
+    c_k = col(c(x))
     f_x_k = f_x(x)
     c_x_k = c_x(x)
     H_k = eye[:n, :n]
 
 
-    out = qp_dispatch(x, f_x_k, H_k, c_x_k, c_l, c_u, x_l, x_u, active_set, True)
+    out = qp_dispatch(x, f_x_k, H_k, c_x_k, c_l - c_k, c_u - c_k, x_l, x_u, active_set)
 
     p = out[0] - x
     active_set = out[1]
@@ -111,7 +115,7 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
     while True:
         print('Iteration of SQP: ' + str(k))
         f_k = f(x)
-        c_k = c(x)
+        c_k = col(c(x))
         f_x_k = f_x(x)
         c_x_k = c_x(x)
         H_l_k = H(x, lambda_k)
@@ -143,7 +147,7 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
             H_k = H_k + i * eye[:n, :n]
             i *= 10
 
-        out = qp_dispatch(x, f_x_k, H_k, c_x_k, c_l, c_u, x_l, x_u, active_set, True)
+        out = qp_dispatch(x, f_x_k, H_k, c_x_k, c_l - c_k, c_u - c_k, x_l, x_u, active_set)
 
         p = out[0]
         active_set = out[1]
