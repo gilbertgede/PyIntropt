@@ -262,9 +262,10 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
     g = densify(c + H * x)
 
     n0 = len(free_set)
-    print('\n\nInitial Sizes - n: %8d, m: %8d, n0: %8d' % (n, m, n0))
+    #print('\n\nInitial Sizes - n: %8d, m: %8d, n0: %8d' % (n, m, n0))
     if find_feas:
-        print('Initial Feasibility Violation: ' + str(abs(ress0).max()))
+        #print('Initial Feasibility Violation: ' + str(abs(ress0).max()))
+        pass
 
     mu = 0
     mu_ineq = 0
@@ -295,12 +296,13 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
 
 
         if not find_feas and (abs(A * p).max() > 1.e3 * eps):
-            print('\033[31mAp max: ' + str((abs(A * p).max())) + '\033[0m')
+            #print('\033[31mAp max: ' + str((abs(A * p).max())) + '\033[0m')
+            pass
 
         # Portion where the step size is calculated
         alpha, alpha_ind = _min_ratio_test(x, p, x_l, x_u)
 
-        print(_print_step(i, x, num_actv, alpha))
+        #print(_print_step(i, x, num_actv, alpha))
 
         # take the step
         x = x + alpha * p
@@ -310,16 +312,16 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
 
         if find_feas:
             if abs(A * x + ress).max() < 1.e3 * eps:
-                print('Found feasible point: ' + str(abs(A * x + ress).max()))
+                #print('Found feasible point: ' + str(abs(A * x + ress).max()))
                 break
 
         #if max(list(stalling_count.values())) > (n - m) / 2:
         if max(list(stalling_count.values())) > 20:
             stalling = True
-            print('Stalling!!!')
+            #print('Stalling!!!')
             break
 
-        if i > 2 * (n - m):
+        if i > 2 * (n):
             raise Exception('Too many iterations')
 
         if alpha < 1:
@@ -341,7 +343,7 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
                         ri = randint(0, max(max_ind.shape))
                         max_ind = max_ind[0, ri]
                         max_ind = active_list[max_ind]
-                        print('freeing: ' + str(max_ind))
+                        #print('freeing: ' + str(max_ind))
                         free_set.add(max_ind)
                         active_set -= {max_ind}
                         stalling_count[max_ind] += 1
@@ -359,7 +361,7 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
                 else:
                     raise ValueError("That index isn't actually close...")
 
-                print('fixing:  ' + str(ind))
+                #print('fixing:  ' + str(ind))
 
                 # Update the sets
                 stalling_count[ind] += 1
@@ -382,14 +384,14 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
 
             # if nothing has a bad multiplier, we're done!
             if max(maxval) <= 0:
-                print('All lagrange multipliers are good!')
+                #print('All lagrange multipliers are good!')
                 break
             else: # otherwise, remove offending element from active set
                 max_ind1 = nonzero(maxval == max(maxval))[0]
                 for ii in range(max(max_ind1.shape)):
                     max_ind = max_ind1[0, ii]
                     max_ind = active_list[max_ind]
-                    print('freeing: ' + str(max_ind))
+                    #print('freeing: ' + str(max_ind))
                     free_set.add(max_ind)
                     active_set -= {max_ind}
                     stalling_count[max_ind] += 1

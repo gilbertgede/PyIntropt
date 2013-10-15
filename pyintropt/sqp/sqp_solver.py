@@ -1,6 +1,6 @@
 from numpy import matrix, array, eye, asarray, vstack
 from .qp_solver import qp_dispatch
-from pyintropt.functions import eps, col, big
+from pyintropt.functions import eps, col, big, sp_extract_row as extract
 from numpy.linalg import inv
 from scipy.sparse import issparse
 
@@ -82,24 +82,29 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
     H_k = eye[:n, :n]
 
 
-    out = qp_dispatch(x, f_x_k, H_k, c_x_k, c_l - c_k, c_u - c_k, x_l, x_u, active_set)
+    out = qp_dispatch(x * 0, f_x_k + H_k * x, H_k, c_x_k, c_l - c_k, c_u - c_k, x_l - x, x_u - x, active_set)
 
-    p = out[0] - x
+    p = out[0]
     active_set = out[1]
     qp_multipliers = out[2]
-    active_list = list(active_set)
-    qp_multipliers = eye[active_list].T * qp_multipliers
+    active_list = sorted(list(active_set))
+    qp_multipliers = extract(eye, active_list).T * qp_multipliers
 
 
     # TODO check if these should be 0 for initial penalty parameter calculation
     nu_k = 0 * qp_multipliers[:n]       # simple bounds
     lambda_k = 0 * qp_multipliers[n:]   # constraint bounds
+    qp_nu = qp_multipliers[:n]       # simple bounds
+    qp_lambda = qp_multipliers[n:]   # constraint bounds
     # calculate penalty parameters
     t = _slack_finder(x, x_l, x_u, nu_k)
     s = _slack_finder(c_k, c_l, c_u, lambda_k)
     delta_t = p + x - t
     delta_s = c_x_k * p + c_k - s
+    delta_nu = qp_nu - nu_k
+    delta_lambda = qp_lambda - lambda_k
     sigma = - 0.5 * p.T * H_k * p + nu_k.T * delta_t + lambda_k.T * delta_s - psi_0 * (x - t).T * (x - t) - psi_0 * (c_k - s).T * (c_k - s)
+    sigma = - 0.5 * p.T * H_k * p + qp_nu.T * delta_t + qp_lambda.T * delta_s - 2 * delta_nu.T * (x - t) - 2 * delta_lambda.T * (c_k - s) - psi_0 * (x - t).T * (x - t) - psi_0 * (c_k - s).T * (c_k - s)
     a = matrix(vstack([asarray(x - t)**2, asarray(c_k - s)**2]))
     psi = a * inv(a.T * a) * sigma #TODO change to solve
     xi = psi[:n] + psi_0
@@ -119,18 +124,29 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
         f_x_k = f_x(x)
         c_x_k = c_x(x)
         H_l_k = H(x, lambda_k)
+        print('Obj value: ' + str(f_k))
+
+        print((asarray(c_l > c_k) * abs(asarray(c_l - c_k))).max())
+        print((asarray(c_u < c_k) * abs(asarray(c_u - c_k))).max())
+        print((asarray(x_l > x) * abs(asarray(x_l - x))).max())
+        print((asarray(x_u < x) * abs(asarray(x_u - x))).max())
+
+
 
         #TODO improve check for termination - needs multiplier sign check
         # (sort of) using termination criteria from [Gill2005]
         if k > 0:
             eps_p = 1.e-6 # tau_p in paper
             eps_d = 1.e-6 # tau_d in paper
-            tau_x = eps_p * (1 + x.abs().max())
-            tau_l = eps_d * (1 + lambda_k.abs().max()) # tau_pi in paper
+            tau_x = eps_p * (1 + abs(x).max())
+            tau_l = eps_d * (1 + abs(lambda_k).max()) # tau_pi in paper
             # check constraints
             # check lambda signs
-            term1 = (c_l <= c_k) and (c_k <= c_u) and (x_l <= x) and (x <= x_u)
-            term3 = abs(f_x_k - c_x_k.T * lambda_k) <= tau_l
+            term1 = (c_l <= c_k).all() and (c_k <= c_u).all() and (x_l <= x).all() and (x <= x_u).all()
+            term3 = (abs(f_x_k - c_x_k.T * lambda_k) <= tau_l).all()
+            print('terms')
+            print(term1)
+            print(term3)
             if term1 and term3:
                 break
 
@@ -147,18 +163,19 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
             H_k = H_k + i * eye[:n, :n]
             i *= 10
 
-        out = qp_dispatch(x, f_x_k, H_k, c_x_k, c_l - c_k, c_u - c_k, x_l, x_u, active_set)
+        out = qp_dispatch(x * 0, f_x_k + H_k * x, H_k, c_x_k, c_l - c_k, c_u - c_k, x_l - x, x_u - x, active_set)
 
         p = out[0]
+        print((f_x_k + H_k * x).T * p + 0.5 * p.T * H_k * p)
         active_set = out[1]
         qp_multipliers = out[2]
-        active_list = list(active_set)
-        qp_multipliers = eye[active_list].T * qp_multipliers
+        active_list = sorted(list(active_set))
+        qp_multipliers = extract(eye, active_list).T * qp_multipliers
 
         qp_nu = qp_multipliers[:n]       # simple bounds
         qp_lambda = qp_multipliers[n:]   # constraint bounds
-        delta_nu = nu_k - qp_nu
-        delta_lambda = lambda_k - qp_lambda
+        delta_nu = qp_nu - nu_k
+        delta_lambda = qp_lambda - lambda_k
 
         # calculate penalty parameters
         t = _slack_finder(x, x_l, x_u, nu_k, xi)
@@ -168,33 +185,53 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
 
         # Compute new penalty functions
         a = matrix(vstack([asarray(x - t)**2, asarray(c_k - s)**2]))
-        sigma = - 0.5 * p.T * H_k * p + nu_k.T * delta_t + lambda_k.T * delta_s - 2 * delta_nu.T * (x - t) - 2 * delta_lambda.T * (c_k - s) - psi_0 * (x - t).T * (x - t) - psi_0 * (c_k - s).T * (c_k - s)
+        sigma = - 0.5 * p.T * H_k * p + qp_nu.T * delta_t + qp_lambda.T * delta_s - 2 * delta_nu.T * (x - t) - 2 * delta_lambda.T * (c_k - s) - psi_0 * (x - t).T * (x - t) - psi_0 * (c_k - s).T * (c_k - s)
         psi = a * inv(a.T * a) * sigma #TODO change to solve
+        print('psi')
+        print(sigma)
         xi = psi[:n] + psi_0
         theta = psi[n:] + psi_0
         xi_mat = diag(xi)
         theta_mat = diag(theta)
         # define merit function
-        M = lambda x, n, l, t, s: f(x) - n.T * (x - t) - l.T * (c(x) - s) + 0.5 * (x - t).T * xi * (x - t) + 0.5 * (c(x) - s).T * theta * (c(x) - s)
-        dMda_0 = lambda x, n, l, t, s: f_x(x) * p - l.T * (c_x(x) * p - delta_s) - delta_lambda.T * (c(x) - s) - n.T * (p - delta_t) - delta_nu.T * (x - t) + (c_x(x) * p - delta_s).T * theta_mat * (c(x) - s) + (p - delta_t).T * xi_mat * (x - t)
+        M = lambda x, n, l, t, s: f(x) - n.T * (x - t) - l.T * (c(x) - s) + 0.5 * (x - t).T * xi_mat * (x - t) + 0.5 * (c(x) - s).T * theta_mat * (c(x) - s)
+        dMda_0 = lambda x, n, l, t, s: f_x(x).T * p - l.T * (c_x(x) * p - delta_s) - delta_lambda.T * (c(x) - s) - n.T * (p - delta_t) - delta_nu.T * (x - t) + (c_x(x) * p - delta_s).T * theta_mat * (c(x) - s) + (p - delta_t).T * xi_mat * (x - t)
         # TODO define merit function derivative as a function of alpha, for interpolation line search
 
         # do line search
-        alpha = 1
+        alpha = 10.
         kappa1 = 1e-5
         kappa2 = 0.9
 
+
         M0 = M(x, nu_k, lambda_k, t, s)
         dMda0 = dMda_0(x, nu_k, lambda_k, t, s)
+        if dMda0 < 0:
+            raise ValueError('Negative Merit Function Direction')
+
+        print(f_x(x).T * p)
+        print(M0)
+        for i in range(100):
+            alpha = i / 100.
+            one = M(x + alpha * p, nu_k + alpha * delta_nu, lambda_k + alpha * delta_lambda, t + alpha * delta_t, s + alpha * delta_s)
+            print(one)
 
         while True:
-            if M(x + alpha * p, nu_k + alpha * delta_nu, lambda_k + alpha * delta_lambda, t + alpha * delta_t, s + alpha * delta_s) - M0 < kappa1 * alpha * dMda0:
+            one = M(x + alpha * p, nu_k + alpha * delta_nu, lambda_k + alpha * delta_lambda, t + alpha * delta_t, s + alpha * delta_s) - M0
+            two = kappa1 * alpha * dMda0
+            one = one * (one > 1e3 * eps)
+            print('in loop')
+            print(one)
+            print(two)
+            print(dMda0)
+            if  one <= two:
                 break
             alpha *= 0.5
+            print(alpha)
 
         # take step
         x = x + alpha * p
-        nu_k = nu_l + alpha * delta_nu
+        nu_k = nu_k + alpha * delta_nu
         lambda_k = lambda_k + alpha * delta_lambda
         k += 1
 

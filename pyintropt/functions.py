@@ -1,7 +1,12 @@
+import numpy as np
+
 from numpy import zeros, finfo, vstack, ones, matrix, empty, where, squeeze, prod, asarray, multiply
 from scipy.linalg import lu_factor, lu_solve
-from scipy.sparse import csc_matrix, isspmatrix, isspmatrix
+from scipy.sparse import csc_matrix, isspmatrix, isspmatrix, coo_matrix
 from scipy.sparse.linalg import spsolve
+
+from numba import autojit
+
 eps = finfo(float).eps
 big = 1 / eps**2
 
@@ -150,7 +155,7 @@ def sp_extract_row(x, row_list):
     try:
         to_return = x[row_list]
     except:
-        to_return = x[0:0]
+        to_return = coo_matrix((0, x.shape[1]), np.float64)
     return to_return
 
 
