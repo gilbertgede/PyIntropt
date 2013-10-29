@@ -1,11 +1,12 @@
 import numpy as np
 import scipy.sparse as sp
 
-from numpy import bmat, nonzero, maximum, multiply, asarray, matrix
+from numpy import bmat, nonzero, maximum, multiply, asarray, matrix, count_nonzero
 from numpy.linalg import eigvals, matrix_rank, LinAlgError # TODO should be doing sparse versions of these...
 from numpy.random import randint
 from pyintropt.functions import col, eps, big, densify, vec_clamp
 from pyintropt.functions import sp_extract_row as extract, sp_factiz as factorized, sp_solve as solve
+from scipy.sparse.linalg import eigsh, svds, inv
 
 mbmat = lambda x: sp.bmat(x).tocsc()
 
@@ -71,7 +72,9 @@ def qp_dispatch(x, c, f_xx, c_x, c_l, c_u, x_l, x_u, active_set=[]):
 
     # Final solve
     x, active_set, mu = qp_subdispatch(xp * 0, cp + Hp * xp, Hp, Ap, vec_clamp(lp - xp), vec_clamp(up - xp), active_set, func=qp_ns, feas=qp_feasdispatch)
-    return vec_clamp(xp + x)[:n, 0], active_set, mu
+    x = vec_clamp(xp + x)
+
+    return x[:n, 0], active_set, mu
 
 
 def slackify(x, c, H, c_x, x_l, x_u, c_l, c_u, s_init):
@@ -127,9 +130,6 @@ def qp_subdispatch(x, c, H, A, x_l, x_u, active_set, func=None, feas=None):
             x_l2 -= rand_perturb
             x_u2 += rand_perturb
             x, active_set, mu, stalled = callfunc(x, c, H, A, x_l2, x_u2, active_set)
-        if func is not None:
-            x, active_set, mu = qp_subdispatch(x, c, H, A, x_l, x_u, active_set, feas=feas)
-            x = vec_clamp(x)
         if func is not None:
             x, active_set, mu = qp_subdispatch(x, c, H, A, x_l, x_u, active_set, feas=feas)
             x = vec_clamp(x)
@@ -234,6 +234,58 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
             ind = [ind]
         return (alpha, ind)
 
+    def _find_Z_Y(A):
+        """
+        Function to find the null space of a matrix A and a paired basis Y
+        """
+        m, n = A.shape
+        AHA = A.T * A
+        while True:
+            try:
+                eigvals, eigvecs = eigsh(AHA, k=n-m, which='SM')
+                break
+            except:
+                print('retrying eigsh')
+                pass
+        Z = mbmat(eigvecs)
+        Y = A.T
+        return Z, Y
+
+    """
+    # "better" version written
+
+    def _remove_dependent(A):
+        ""
+        Returns a matrix which has the linearly dependent rows of A removed
+
+        Known at entry that A has row rank deficiency
+        ""
+        from numpy.linalg import matrix_rank
+        m, n = A.shape
+        basis = [0]
+        for i in range(1, m + 1):
+            if len(basis) <= 2:
+                if matrix_rank((A[basis, :] * A[basis, :].T).todense()) != i:
+                    basis = basis[:-1]
+            else:
+                temp = A[basis, :] * A[basis, :].T
+                l_evals = eigsh(temp, k=1, which='SM', return_eigenvectors=False, maxiter=10000)
+                if abs(l_evals) < 1e3 * eps:
+                    basis = basis[:-1]
+            if i == m:
+                break
+            basis.append(i)
+        return basis
+    """
+
+    def _remove_dependent(A, m0, current_set):
+        basis = []
+        for i in range(m0):
+            if not set(nonzero(A[i, :])[1].tolist()).issubset(current_set):
+                basis += [i]
+        basis += list(range(m0, A.shape[0]))
+        return basis
+
 
     n = x.shape[0]
     m = A.shape[0]
@@ -253,20 +305,29 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
     fixed_set     = set(fixed_list)
     free_set      = set(list(range(n)))
     active_set    = set(active_set)
+    nonfixed_set = free_set - fixed_set
     active_set   -= fixed_set
     free_set     -= active_set
     free_set     -= fixed_set
 
     # Transformation matrices between x` and working/free sets
     Cmat = eye[:n, :n]
+    C_nfx = extract(Cmat, sorted(list(nonfixed_set)))
     g = densify(c + H * x)
 
     n0 = len(free_set)
-    #print('\n\nInitial Sizes - n: %8d, m: %8d, n0: %8d' % (n, m, n0))
+    print('\n\nInitial Sizes - n: %8d, m: %8d, n0: %8d' % (n, m, n0))
     if find_feas:
-        #print('Initial Feasibility Violation: ' + str(abs(ress0).max()))
+        print('Initial Feasibility Violation: ' + str(abs(ress0).max()))
         pass
 
+    cons = {}
+
+    H_nfx = C_nfx * H * C_nfx.T
+    c_nfx = C_nfx * c
+    A_nfx = A_ * C_nfx.T
+
+    g_nfx = densify(c_nfx + H_nfx * C_nfx * x)
     mu = 0
     mu_ineq = 0
     i = 0
@@ -280,45 +341,92 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
         num_actv = len(active_set)     # no. of fixed variables
         num_work = len(working_set)     # no. of fixed variables
 
+
+        """
+        #Direct Solve Code
+
         if ress0 is None:
             ress = zeros[:m, 0]
         else:
             ress = ress0 + A * x
 
+        A_red = A * C_f.T
+        H_red = C_f * H * C_f.T
         f = bmat([[C_f * g], [densify(ress)]])
-
-        ta = A * C_f.T
-        K = mbmat([[C_f * H * C_f.T, ta.T], [ta, zeros[:m, :m]]])
+        A_red = A * C_f.T
+        K = mbmat([[H_red, A_red.T], [A_red, zeros[:m, :m]]])
         # TODO fix it so the solve doesn't sometimes get errors
         xx = col(solve(K, f))
         p = -C_f.T * xx[:n - num_work]
         mu = xx[n - num_work:]
+        """
 
 
-        if not find_feas and (abs(A * p).max() > 1.e3 * eps):
-            #print('\033[31mAp max: ' + str((abs(A * p).max())) + '\033[0m')
+        if ress0 is None:
+            ress_hat = zeros[: m + num_actv, 0]
+        else:
+            ress = ress0 + A * x
+            ress_hat = bmat([[ress], [zeros[:num_actv, 0].todense()]])
+
+        A_hat = mbmat([[A * C_nfx.T], [C_a * C_nfx.T]])
+
+        if A_hat.shape[0] > A_hat.shape[1]:
+            A_hat = A_hat[:A_hat.shape[1], :]
+            ress_hat = ress_hat[:A_hat.shape[1], 0]
+
+
+        # TODO fix it so the solve doesn't sometimes get errors
+        K = mbmat([[C_nfx * H * C_nfx.T, A_hat.T], [A_hat, zeros[:A_hat.shape[0], :A_hat.shape[0]]]])
+        f = bmat([[C_nfx * g], [densify(ress_hat)]])
+        xx = col(solve(K, f))
+        p = - xx[: n - len(fixed_set)]
+        p = C_nfx.T * p
+        p = C_f.T * C_f * p
+        mu = xx[n - len(fixed_set) : n - len(fixed_set) + m]
+        #mu_ineq = xx[n - len(fixed_set) + m :]
+
+
+        if abs(K * xx - f).max() > 1e5 * eps:
+            basis = _remove_dependent(A_hat, m, active_set)
+            ress_hat = ress_hat[basis, 0]
+            A_hat = extract(A_hat, basis)
+            K = mbmat([[C_nfx * H * C_nfx.T, A_hat.T], [A_hat, zeros[:A_hat.shape[0], :A_hat.shape[0]]]])
+            f = bmat([[C_nfx * g], [densify(ress_hat)]])
+            xx = col(solve(K, f))
+            p = - xx[: n - len(fixed_set)]
+            p = C_nfx.T * p
+            p = C_f.T * C_f * p
+            mu = xx[n - len(fixed_set) : n - len(fixed_set) + m]
+
+        if abs(K * xx - f).max() > 1e5 * eps:
+            import ipdb
+            ipdb.set_trace()
+
+
+        if not find_feas and (abs(A * p).max() > 2.e3 * eps):
+            print('\033[31mAp max: ' + str((abs(A * p).max())) + '\033[0m')
             pass
 
         # Portion where the step size is calculated
         alpha, alpha_ind = _min_ratio_test(x, p, x_l, x_u)
 
-        #print(_print_step(i, x, num_actv, alpha))
+        print(_print_step(i, x, num_actv, alpha))
 
         # take the step
         x = x + alpha * p
         g = densify(c + H * x)
-        mu_ineq = C_a * g - C_a * A.T * mu
+        mu_ineq = C_a * g - C_a * A.T * mu # Direct solve mu_ineq calc
         i += 1
 
         if find_feas:
             if abs(A * x + ress).max() < 1.e3 * eps:
-                #print('Found feasible point: ' + str(abs(A * x + ress).max()))
+                print('Found feasible point: ' + str(abs(A * x + ress0).max()))
                 break
 
         #if max(list(stalling_count.values())) > (n - m) / 2:
         if max(list(stalling_count.values())) > 20:
             stalling = True
-            #print('Stalling!!!')
+            print('Stalling!!!')
             break
 
         if i > 2 * (n):
@@ -361,7 +469,7 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
                 else:
                     raise ValueError("That index isn't actually close...")
 
-                #print('fixing:  ' + str(ind))
+                print('fixing:  ' + str(ind))
 
                 # Update the sets
                 stalling_count[ind] += 1
@@ -384,7 +492,10 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
 
             # if nothing has a bad multiplier, we're done!
             if max(maxval) <= 0:
-                #print('All lagrange multipliers are good!')
+                if find_feas:
+                    print('Found feasible point: ' + str(abs(A * x + ress0).max()))
+                    print('p is ' + str(p.T))
+                print('All lagrange multipliers are good!')
                 break
             else: # otherwise, remove offending element from active set
                 max_ind1 = nonzero(maxval == max(maxval))[0]
