@@ -361,6 +361,9 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
             p = C_nfx.T * p
             p = C_f.T * C_f * p
             mu = xx[n - len(fixed_set) : n - len(fixed_set) + m]
+            #if i > n:
+            #    import ipdb
+            #    ipdb.set_trace()
 
 
         if not find_feas and (abs(A * p).max() > 2.e3 * eps):
