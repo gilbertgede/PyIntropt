@@ -4,6 +4,7 @@ from numpy import zeros, finfo, vstack, ones, matrix, empty, where, squeeze, pro
 from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse import csc_matrix, isspmatrix, isspmatrix, coo_matrix
 from scipy.sparse.linalg import spsolve
+from pyintropt.ss_spqr import QR
 
 from numba import autojit
 
@@ -31,6 +32,22 @@ def densify(x):
     if isspmatrix(x):
         return x.todense()
     return x
+
+
+def get_independent_rows(A, tol=1e3*eps):
+    """ Code to get independent rows in A, using QR decomposition. """
+    A = A.T.tocsc()
+    m, n = A.shape
+    Q, R = QR(A)
+    cols = []
+    row_ind = 0
+    for i in range(n):
+        if abs(R[row_ind, i]) > tol:
+            row_ind += 1
+            cols += [i]
+        if row_ind == m:
+            break
+    return cols
 
 
 def factiz(K):

@@ -4,7 +4,7 @@ import scipy.sparse as sp
 from numpy import bmat, nonzero, maximum, multiply, asarray, matrix, count_nonzero
 from numpy.linalg import eigvals, matrix_rank, LinAlgError # TODO should be doing sparse versions of these...
 from numpy.random import randint
-from pyintropt.functions import col, eps, big, densify, vec_clamp
+from pyintropt.functions import col, eps, big, densify, vec_clamp, get_independent_rows
 from pyintropt.functions import sp_extract_row as extract, sp_factiz as factorized, sp_solve as solve
 from scipy.sparse.linalg import eigsh, svds, inv
 
@@ -191,12 +191,16 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
         outstr += ' Iter: %7d   ' % i
         val = (c.T * x + 0.5 * x.T * H * x)[0, 0]
         outstr += 'Obj. val: ' + blue + '%4.6e    ' % val + end
-        outstr += 'Active set size: %7d    ' % num_actv
+        outstr += 'Active set size: %7d  ' % num_actv
         leader = bad
-        if max(abs(A * x)) < 1.e3 * eps:
-            leader = good
-        temps = leader + '%2.3e ' % max(abs(A * x)) + end + '    '
-        outstr += '|Ax|= %s' % temps
+        if ress0 is not None:
+            if max(abs(A * x + ress0)) < 1.e3 * eps:
+                leader = good
+            outstr += '|Ax+r|= ' + leader + '%2.3e ' % max(abs(A * x + ress0)) + end + '    '
+        else:
+            if max(abs(A * x)) < 1.e3 * eps:
+                leader = good
+            outstr += '  |Ax|= ' + leader + '%2.3e ' % max(abs(A * x)) + end + '    '
 
         l = (x_l <= x).all()
         u = (x_u >= x).all()
@@ -216,8 +220,7 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
         utilize methods in [Gill1988].
         """
 
-        p2 = p.copy()
-        p2 += eps * (abs(p2) < eps)
+        p2 = p + eps * (abs(p) < eps)
         alpha_l = (l - x) / p2
         alpha_u = (u - x) / p2
         tol = eps**(2. / 3.)    # from [Gill1988], TODO re-examine maybe?
@@ -234,57 +237,49 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
             ind = [ind]
         return (alpha, ind)
 
-    def _find_Z_Y(A):
+    def _free(x, active_set, free_set, mu_ineq, stalling_count):
         """
-        Function to find the null space of a matrix A and a paired basis Y
+        Putting the code used to move variables between sets when freeing in
+        one place.
         """
-        m, n = A.shape
-        AHA = A.T * A
-        while True:
-            try:
-                eigvals, eigvecs = eigsh(AHA, k=n-m, which='SM')
-                break
-            except:
-                print('retrying eigsh')
-                pass
-        Z = mbmat(eigvecs)
-        Y = A.T
-        return Z, Y
+        freed = False
+        active_list = sorted(list(active_set))
+        at_upper = (abs(x - x_u) < eps)[active_list]
+        at_lower = (abs(x - x_l) < eps)[active_list]
+        upper = multiply(multiply(at_upper, (mu_ineq > 0)), abs(mu_ineq))
+        lower = multiply(multiply(at_lower, (mu_ineq < 0)), abs(mu_ineq))
+        maxval = maximum(upper, lower)
+        if max(maxval) > 0:
+            max_ind1 = nonzero(maxval == max(maxval))[0]
+            for ii in range(max(max_ind1.shape)):
+                ind = active_list[max_ind1[0, ii]]
+                print('freeing: ' + str(ind))
+                free_set.add(ind)
+                active_set -= {ind}
+                stalling_count[ind] += 1
+                freed = True
+        return freed
 
-    """
-    # "better" version written
-
-    def _remove_dependent(A):
-        ""
-        Returns a matrix which has the linearly dependent rows of A removed
-
-        Known at entry that A has row rank deficiency
-        ""
-        from numpy.linalg import matrix_rank
-        m, n = A.shape
-        basis = [0]
-        for i in range(1, m + 1):
-            if len(basis) <= 2:
-                if matrix_rank((A[basis, :] * A[basis, :].T).todense()) != i:
-                    basis = basis[:-1]
+    def _fix(x, active_set, free_set, alpha_ind, stalling_count):
+        """
+        Putting the code to move variables between sets when fixing in one
+        place.
+        """
+        for ii in range(len(alpha_ind)):
+            ind = alpha_ind[ii]
+            if (ind in active_set) or (ind in fixed_set):
+                raise ValueError('That variable is already fixed...')
+            if abs(x[ind, 0] - x_l[ind, 0]) < 1.e3 * eps:
+                x[ind, 0] = x_l[ind, 0]
+            elif abs(x[ind, 0] - x_u[ind, 0]) < 1.e3 * eps:
+                x[ind, 0] = x_u[ind, 0]
             else:
-                temp = A[basis, :] * A[basis, :].T
-                l_evals = eigsh(temp, k=1, which='SM', return_eigenvectors=False, maxiter=10000)
-                if abs(l_evals) < 1e3 * eps:
-                    basis = basis[:-1]
-            if i == m:
-                break
-            basis.append(i)
-        return basis
-    """
+                raise ValueError("That index isn't actually close...")
 
-    def _remove_dependent(A, m0, current_set):
-        basis = []
-        for i in range(m0):
-            if not set(nonzero(A[i, :])[1].tolist()).issubset(current_set):
-                basis += [i]
-        basis += list(range(m0, A.shape[0]))
-        return basis
+            print('fixing:  ' + str(ind))
+            stalling_count[ind] += 1
+            active_set.add(ind)
+            free_set  -= {ind}
 
 
     n = x.shape[0]
@@ -293,7 +288,6 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
     zeros = sp.coo_matrix((n, n), np.float64).tocsc()
     eye   = sp.eye(n, n).tocsc()
     ones  = np.matrix(np.ones((n + m, 1)))
-
 
     stalling_count = dict(zip(list(range(n)), [0]*n))
 
@@ -321,13 +315,6 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
         print('Initial Feasibility Violation: ' + str(abs(ress0).max()))
         pass
 
-    cons = {}
-
-    H_nfx = C_nfx * H * C_nfx.T
-    c_nfx = C_nfx * c
-    A_nfx = A_ * C_nfx.T
-
-    g_nfx = densify(c_nfx + H_nfx * C_nfx * x)
     mu = 0
     mu_ineq = 0
     i = 0
@@ -342,26 +329,6 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
         num_work = len(working_set)     # no. of fixed variables
 
 
-        """
-        #Direct Solve Code
-
-        if ress0 is None:
-            ress = zeros[:m, 0]
-        else:
-            ress = ress0 + A * x
-
-        A_red = A * C_f.T
-        H_red = C_f * H * C_f.T
-        f = bmat([[C_f * g], [densify(ress)]])
-        A_red = A * C_f.T
-        K = mbmat([[H_red, A_red.T], [A_red, zeros[:m, :m]]])
-        # TODO fix it so the solve doesn't sometimes get errors
-        xx = col(solve(K, f))
-        p = -C_f.T * xx[:n - num_work]
-        mu = xx[n - num_work:]
-        """
-
-
         if ress0 is None:
             ress_hat = zeros[: m + num_actv, 0]
         else:
@@ -369,10 +336,6 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
             ress_hat = bmat([[ress], [zeros[:num_actv, 0].todense()]])
 
         A_hat = mbmat([[A * C_nfx.T], [C_a * C_nfx.T]])
-
-        if A_hat.shape[0] > A_hat.shape[1]:
-            A_hat = A_hat[:A_hat.shape[1], :]
-            ress_hat = ress_hat[:A_hat.shape[1], 0]
 
 
         # TODO fix it so the solve doesn't sometimes get errors
@@ -387,9 +350,10 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
 
 
         if abs(K * xx - f).max() > 1e5 * eps:
-            basis = _remove_dependent(A_hat, m, active_set)
-            ress_hat = ress_hat[basis, 0]
-            A_hat = extract(A_hat, basis)
+            print('Solve Failed')
+            rows_to_keep = get_independent_rows(A_hat, 1e3*eps)
+            ress_hat = ress_hat[rows_to_keep, 0]
+            A_hat = extract(A_hat, rows_to_keep)
             K = mbmat([[C_nfx * H * C_nfx.T, A_hat.T], [A_hat, zeros[:A_hat.shape[0], :A_hat.shape[0]]]])
             f = bmat([[C_nfx * g], [densify(ress_hat)]])
             xx = col(solve(K, f))
@@ -398,14 +362,11 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
             p = C_f.T * C_f * p
             mu = xx[n - len(fixed_set) : n - len(fixed_set) + m]
 
-        if abs(K * xx - f).max() > 1e5 * eps:
-            import ipdb
-            ipdb.set_trace()
-
 
         if not find_feas and (abs(A * p).max() > 2.e3 * eps):
             print('\033[31mAp max: ' + str((abs(A * p).max())) + '\033[0m')
             pass
+        print('Found point Ax + ress0: ' + str(abs(A * x + ress0).max()))
 
         # Portion where the step size is calculated
         alpha, alpha_ind = _min_ratio_test(x, p, x_l, x_u)
@@ -435,46 +396,11 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
         if alpha < 1:
             """ If we're not taking a full step, we add the limiting index to
             the active set, and pin x` to the appropriate boundary. """
-
-
-            """ Trying fixing and freeing together """
             if find_feas:
                 if num_actv > 0:
-                    active_list = sorted(list(active_set))
-                    at_upper = (abs(x - x_u) < eps)[active_list]
-                    at_lower = (abs(x - x_l) < eps)[active_list]
-                    upper = multiply(multiply(at_upper, (mu_ineq > 0)), abs(mu_ineq))
-                    lower = multiply(multiply(at_lower, (mu_ineq < 0)), abs(mu_ineq))
-                    maxval = maximum(upper, lower)
-                    if max(maxval) > 0:
-                        max_ind = nonzero(maxval == max(maxval))[0][0]
-                        ri = randint(0, max(max_ind.shape))
-                        max_ind = max_ind[0, ri]
-                        max_ind = active_list[max_ind]
-                        #print('freeing: ' + str(max_ind))
-                        free_set.add(max_ind)
-                        active_set -= {max_ind}
-                        stalling_count[max_ind] += 1
+                    _free(x, active_set, free_set, mu_ineq, stalling_count)
 
-
-            # check to see if it variable to be fixed has already been fixed
-            for ii in range(len(alpha_ind)):
-                ind = alpha_ind[ii]
-                if (ind in active_set) or (ind in fixed_set):
-                    raise ValueError('That variable is already fixed...')
-                if abs(x[ind, 0] - x_l[ind, 0]) < 1.e3 * eps:
-                    x[ind, 0] = x_l[ind, 0]
-                elif abs(x[ind, 0] - x_u[ind, 0]) < 1.e3 * eps:
-                    x[ind, 0] = x_u[ind, 0]
-                else:
-                    raise ValueError("That index isn't actually close...")
-
-                print('fixing:  ' + str(ind))
-
-                # Update the sets
-                stalling_count[ind] += 1
-                active_set.add(ind)
-                free_set  -= {ind}
+            _fix(x, active_set, free_set, alpha_ind, stalling_count)
 
         else:
             """ If we are taking a full step, we need to check the lagrange
@@ -483,28 +409,14 @@ def qp_ns(x, c, H, A, x_l, x_u, active_set, find_feas=False, ress0=None):
             if num_actv == 0:
                 break
 
-            active_list = sorted(list(active_set))
-            at_upper = (abs(x - x_u) < eps)[active_list]
-            at_lower = (abs(x - x_l) < eps)[active_list]
-            upper = multiply(multiply(at_upper, (mu_ineq > 0)), abs(mu_ineq))
-            lower = multiply(multiply(at_lower, (mu_ineq < 0)), abs(mu_ineq))
-            maxval = maximum(upper, lower)
-
-            # if nothing has a bad multiplier, we're done!
-            if max(maxval) <= 0:
+            freed = _free(x, active_set, free_set, mu_ineq, stalling_count)
+            if not freed: # if nothing was freed, we are done!
                 if find_feas:
                     print('Found feasible point: ' + str(abs(A * x + ress0).max()))
-                    print('p is ' + str(p.T))
-                print('All lagrange multipliers are good!')
-                break
-            else: # otherwise, remove offending element from active set
-                max_ind1 = nonzero(maxval == max(maxval))[0]
-                for ii in range(max(max_ind1.shape)):
-                    max_ind = max_ind1[0, ii]
-                    max_ind = active_list[max_ind]
-                    #print('freeing: ' + str(max_ind))
-                    free_set.add(max_ind)
-                    active_set -= {max_ind}
-                    stalling_count[max_ind] += 1
+                else:
+                    print('All lagrange multipliers are good!')
+                    break
 
+    mu_ineq = g - A.T * mu # final mu_ineq to return
     return x, active_set, mu_ineq, stalling
+

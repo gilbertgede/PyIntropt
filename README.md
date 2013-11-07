@@ -16,8 +16,7 @@ currently.
 The NLP active set method described by Betts [Betts2010] is instead being
 implemented. It appears more appropriate for optimal control problems, and its
 core is a quadratic programming (QP) solver, which is easier to test in
-isolation. The QP solver core is based off the Schur-complement method of Gill
-et al. [Gill1987].
+isolation. 
 
 
 References (Interior Point):

@@ -89,7 +89,7 @@ def sqp_solver(x0, f, c, f_x, c_x, H, x_l, x_u, c_l, c_u):
     active_set = out[1]
     qp_multipliers = out[2]
     active_list = sorted(list(active_set))
-    qp_multipliers = extract(eye, active_list).T * qp_multipliers
+    # qp_multipliers = extract(eye, active_list).T * qp_multipliers
 
 
     # TODO check if these should be 0 for initial penalty parameter calculation
