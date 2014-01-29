@@ -1,4 +1,6 @@
 import numpy as np
+import scipy.sparse as sp
+import time
 
 from numpy import zeros, finfo, vstack, ones, matrix, empty, where, squeeze, prod, asarray, multiply
 from scipy.linalg import lu_factor, lu_solve
@@ -7,6 +9,8 @@ from scipy.sparse.linalg import spsolve
 from pyintropt.ss_spqr import QR
 
 from numba import autojit
+
+mbmat = lambda x: sp.bmat(x).tocsc()
 
 eps = finfo(float).eps
 big = 1 / eps**2
@@ -34,11 +38,14 @@ def densify(x):
     return x
 
 
-def get_independent_rows(A, tol=1e3*eps):
+def get_independent_rows(A, tol=1e3*eps, R=None, perm=False):
     """ Code to get independent rows in A, using QR decomposition. """
-    A = A.T.tocsc()
-    m, n = A.shape
-    Q, R = QR(A)
+    if R is None:
+        A = A.T.tocsc()
+        #Q, R, rank = QR(A)
+        qr_out = QR(A, perm)
+        R = qr_out[1]
+    m, n = R.shape
     cols = []
     row_ind = 0
     for i in range(n):
@@ -47,7 +54,63 @@ def get_independent_rows(A, tol=1e3*eps):
             cols += [i]
         if row_ind == m:
             break
-    return cols
+    # un-permutate
+    if perm:
+        permutate = qr_out[3]
+        return permutate[cols]
+    else:
+        return cols
+
+
+def get_updated_independent_rows(AT_Q, AT_R, C, tol=1e3*eps):
+    """ Code to get independent rows from an update to the QR decomposition. """
+    # TODO this entire function is apparently very, very, slow...
+
+    def _givens(i, j, A):
+        mat = sp.eye(A.shape[0], format='dok')
+        a = A[(i > j) * j + (i < j) * i, j]
+        b = A[(i > j) * i + (i < j) * j, j]
+        r = (a**2 + b**2)**0.5
+        if r == 0:
+            c = 1
+            s = 0
+        else:
+            c = a / r
+            s = b / r
+        mat[i, i] = c
+        mat[j, j] = c
+        mat[i, j] = -(i > j) * s + (i < j) * s
+        mat[j, i] = (i > j) * s - (i < j) * s
+        return mat
+
+    def _HH(v1, v2): # already know ||v1||==||v2||==1
+        I = sp.eye(len(v1))
+        u = v1 - v2
+        u = u
+        return I - 2 * u * u.T
+
+    Q = AT_Q.copy()
+    R = AT_R.copy()
+    mc = C.shape[0]
+    for i in range(mc):
+        m, n = R.shape
+        a = C[i, :]
+
+    """
+    GIVENS CODE - REALLY SLOW
+    R2 = (C * AT_Q).T
+    # Has parts of R for C, but needs to be rotated (triangularized)
+    R_new = mbmat([[AT_R, R2]])
+
+    tempR = R_new.copy()
+    for i in range(AT_R.shape[1], R_new.shape[1]):
+        for j in reversed(range(i + 1, R_new.shape[0])):
+            g = _givens(j, i, tempR)
+            tempR = g.dot(tempR)
+            print(i,j)
+    #TODO remove some of the non-zero entries, to save size...?
+    return get_independent_rows(None, tol=tol, R=tempR)
+    """
 
 
 def factiz(K):
@@ -133,7 +196,7 @@ def col(x):
     """
     Helper function to return x as a n x 1 numpy matrix.
     """
-    return matrix(x).reshape(-1, 1)
+    return matrix(densify(x)).reshape(-1, 1)
 
 
 def row(x):

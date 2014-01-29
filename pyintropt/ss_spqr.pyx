@@ -197,8 +197,13 @@ cdef np.dtype _np_dtype_for(int xtype):
         raise CholmodError, "cholmod->numpy type conversion failed"
 
 
-def QR(A):
-    cdef int order = 0
+def QR(A, P=False):
+    m, n = A.shape
+    cdef int order = 4
+    cdef long * perm = <long *>stdlib.malloc(n * sizeof(long))
+    if P is False:
+        order = 0
+        perm = NULL
     cdef long tol = -2
     cdef cholmod_common Com, *cc
     cc = &Com
@@ -217,7 +222,7 @@ def QR(A):
     c_A.x = i3.data
     """    end code for allocating sparse matrix    """
 
-    res = SuiteSparseQR_C_QR(order, tol, A.shape[0], c_A, &c_Q, &c_R, NULL, cc)
+    rank = SuiteSparseQR_C_QR(order, tol, A.shape[0], c_A, &c_Q, &c_R, &perm, cc)
 
     """    Code to get a scipy sparse matrix    """
     shape = (c_Q.nrow, c_Q.ncol)
@@ -253,9 +258,20 @@ def QR(A):
     R = sparse.csc_matrix((data, indices, indptr), shape=shape)
     """    end code to get a scipy sparse matrix    """
 
+    """    Get Permutation info    """
+    cdef np.npy_intp nn = n
+    if P:
+        py.Py_INCREF(_integer_py_dtype)
+        perm_ret = PyArray_NewFromDescr(&PyArray_Type, _integer_py_dtype, 1, &nn,
+                                        NULL, perm, NPY_F_CONTIGUOUS, None)
+    """    End get permutation info """
+
     cholmod_l_finish(cc)
 
-    return Q, R
+    if P:
+        return Q, R, rank, perm_ret
+    else:
+        return Q, R, rank
 
 
 def qr_solve(A, b):
